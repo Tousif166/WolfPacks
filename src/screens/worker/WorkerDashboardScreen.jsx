@@ -4,9 +4,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Power, Star, Briefcase, IndianRupee, Clock, BookOpen,
   AlertTriangle, Award, Umbrella, MapPin, UserRound, CalendarClock, Bell, LogOut, Bike, Check,
+  GraduationCap, FileText, CheckCircle2,
 } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
+import { useLanguage } from '@context/LanguageContext';
 import { getBookingsByWorker } from '@data/mockBookings';
+import { useWorkerStatus, setWorkerAvailability } from '@data/workerStatus';
+import { useWorkerRegistration, completeTraining, TRAINING_TOTAL_MODULES } from '@data/workerRegistration';
 import { ScreenContainer, SectionHeader, GradientBand } from '@components/app';
 import Badge from '@components/ui/Badge';
 import ProgressRing from '@components/ui/ProgressRing';
@@ -35,12 +39,29 @@ const BRAND_LOGO = require('@assets/logo.png');
 export default function WorkerDashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const { user, profile, workerProfile, logout } = useAuth();
+  const { t } = useLanguage();
+  // Subscribes to the registration store so completing training updates this screen immediately.
+  useWorkerRegistration(user?.email);
+
   const worker = buildWorkerData(user, profile, workerProfile);
+
+  // Free-offline-training programme (only present when the worker enrolled instead of uploading
+  // an experience certificate). `trainingBlocked` is what keeps job accepting locked until done.
+  const training = worker.training;
+  const trainingDone = training?.status === 'completed';
 
   const bookings = worker.mockWorkerId ? getBookingsByWorker(worker.mockWorkerId) : [];
   const activeBooking = bookings.find((b) => ['en-route', 'in-progress', 'assigned'].includes(b.status));
 
-  const [isAvailable, setIsAvailable] = useState(worker.available);
+  // Availability now lives in the shared worker-status store (persisted), not local state, so the
+  // Jobs tab and the admin portal both see it. Leave is derived from approved leave requests.
+  const workerId = worker.mockWorkerId || user?.id;
+  const { available, onLeave } = useWorkerStatus(workerId, {
+    fallbackAvailable: worker.available,
+    leaveRequests: worker.leaveRequests,
+  });
+  // On approved leave the worker is out of the pool regardless of the toggle.
+  const isAvailable = available && !onLeave;
   const [showHelpline, setShowHelpline] = useState(false);
 
   const isNearOvertime = (worker.weekly_hours_worked || 0) >= 36;
@@ -62,7 +83,7 @@ export default function WorkerDashboardScreen({ navigation }) {
   // Visual job-lifecycle stepper — maps the EXISTING booking status onto the standard worker
   // path (invents no state). Statuses off this linear path (e.g. cancelled) return -1 and the
   // stepper is simply not shown for that job.
-  const JOB_LIFECYCLE = ['Accepted', 'En Route', 'At Location', 'Completed'];
+  const JOB_LIFECYCLE = [t('step_accepted'), t('step_en_route'), t('step_at_location'), t('step_completed')];
   const JOB_STATUS_STEP = { assigned: 0, booked: 0, 'en-route': 1, 'in-progress': 2, completed: 3 };
   const activeStep = activeBooking ? (JOB_STATUS_STEP[activeBooking.status] ?? -1) : -1;
 
@@ -81,8 +102,8 @@ export default function WorkerDashboardScreen({ navigation }) {
               <Image source={BRAND_LOGO} style={styles.logo} resizeMode="contain" accessibilityLabel="Sahakar Seva logo" />
             </View>
             <View style={styles.brandText}>
-              <Text style={styles.brandName}>Sahakar Seva</Text>
-              <Text style={styles.brandRole}>Worker</Text>
+              <Text style={styles.brandName}>{t('brand_name')}</Text>
+              <Text style={styles.brandRole}>{t('worker_role')}</Text>
             </View>
           </View>
           <View style={styles.headerActions}>
@@ -95,8 +116,8 @@ export default function WorkerDashboardScreen({ navigation }) {
             </Pressable>
           </View>
         </View>
-        <Text style={styles.greetName} numberOfLines={1}>Namaste, {firstName} 👋</Text>
-        <Text style={styles.greetSub}>Ready to make a difference today?</Text>
+        <Text style={styles.greetName} numberOfLines={1}>{t('greet_namaste', { name: firstName })}</Text>
+        <Text style={styles.greetSub}>{t('greet_ready')}</Text>
       </GradientBand>
 
       <View style={styles.body}>
@@ -105,29 +126,113 @@ export default function WorkerDashboardScreen({ navigation }) {
           <View style={styles.setupCard}>
             <AlertTriangle size={20} color={colors.warning500} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.setupTitle}>Complete your worker profile</Text>
-              <Text style={styles.setupText}>
-                Your profile is pending setup by a cooperative admin. Stats will appear once your account is activated.
-              </Text>
+              <Text style={styles.setupTitle}>{t('complete_profile')}</Text>
+              <Text style={styles.setupText}>{t('complete_profile_desc')}</Text>
             </View>
           </View>
         )}
 
+        {/* Training programme — shown above availability because while it is unfinished it is the
+            blocker the worker has to clear before any job can be accepted. */}
+        {training && (
+          <View style={[styles.trainCard, trainingDone ? styles.trainCardDone : styles.trainCardActive]}>
+            <View style={styles.trainHeadRow}>
+              <View style={[styles.trainIcon, trainingDone && styles.trainIconDone]}>
+                {trainingDone ? (
+                  <Award size={18} color={colors.success700} strokeWidth={2.3} />
+                ) : (
+                  <GraduationCap size={18} color={colors.warning700} strokeWidth={2.3} />
+                )}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.trainTitle, trainingDone && styles.trainTitleDone]}>
+                  {trainingDone ? t('training_completed_title') : t('training_enrolled_title')}
+                </Text>
+                <Text style={styles.trainSub}>
+                  {trainingDone
+                    ? t('training_completed_sub')
+                    : t('training_enrolled_sub', { skills: (worker.skills || []).join(', ') })}
+                </Text>
+              </View>
+            </View>
+
+            {trainingDone ? (
+              <View style={styles.trainCertRow}>
+                <FileText size={13} color={colors.success700} strokeWidth={2.2} />
+                <Text style={styles.trainCertText} numberOfLines={2}>
+                  {t('training_cert_issued')}
+                </Text>
+              </View>
+            ) : (
+              <>
+                {/* Progress over the programme's modules. */}
+                <View style={styles.trainBarTrack}>
+                  <View
+                    style={[
+                      styles.trainBarFill,
+                      {
+                        width: `${Math.round(
+                          ((training.modulesDone || 0) / (training.modulesTotal || TRAINING_TOTAL_MODULES)) * 100,
+                        )}%`,
+                      },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.trainProgressText}>
+                  {t('training_modules_progress', {
+                    done: training.modulesDone || 0,
+                    total: training.modulesTotal || TRAINING_TOTAL_MODULES,
+                  })}
+                </Text>
+
+                <View style={styles.trainNote}>
+                  <Text style={styles.trainNoteText}>{t('training_can_accept_after')}</Text>
+                </View>
+
+                {/* Demo affordance: a Seva Kendra instructor signs this off in a real deployment.
+                    Tapping it finishes the programme and issues the completion certificate. */}
+                <Pressable style={styles.trainBtn} onPress={() => completeTraining(user?.email)}>
+                  <CheckCircle2 size={15} color={colors.white} strokeWidth={2.4} />
+                  <Text style={styles.trainBtnText}>{t('training_mark_complete')}</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        )}
+
         {/* Availability */}
-        <View style={[styles.availCard, isAvailable ? styles.availOn : styles.availOff]}>
-          <View style={[styles.availIcon, isAvailable ? styles.availIconOn : styles.availIconOff]}>
-            <Power size={20} color={isAvailable ? colors.success600 : colors.gray400} strokeWidth={2.2} />
+        <View style={[styles.availCard, onLeave ? styles.availLeave : isAvailable ? styles.availOn : styles.availOff]}>
+          <View style={[styles.availIcon, onLeave ? styles.availIconLeave : isAvailable ? styles.availIconOn : styles.availIconOff]}>
+            <Power
+              size={20}
+              color={onLeave ? colors.warning600 : isAvailable ? colors.success600 : colors.gray400}
+              strokeWidth={2.2}
+            />
           </View>
           <View style={styles.availInfo}>
             <View style={styles.availTitleRow}>
-              <View style={[styles.statusDot, { backgroundColor: isAvailable ? colors.success500 : colors.gray400 }]} />
-              <Text style={styles.availTitle}>{isAvailable ? 'ONLINE' : 'OFFLINE'}</Text>
+              <View
+                style={[
+                  styles.statusDot,
+                  { backgroundColor: onLeave ? colors.warning500 : isAvailable ? colors.success500 : colors.gray400 },
+                ]}
+              />
+              <Text style={styles.availTitle}>
+                {onLeave ? t('on_leave_caps') : isAvailable ? t('online') : t('offline')}
+              </Text>
             </View>
-            <Text style={styles.availSub}>{isAvailable ? "You're accepting new jobs" : 'Not accepting jobs right now'}</Text>
+            <Text style={styles.availSub}>
+              {onLeave ? t('on_leave_sub') : isAvailable ? t('accepting_jobs') : t('not_accepting_jobs')}
+            </Text>
           </View>
+          {/* While on approved leave the toggle is locked — going "online" must not put a worker on
+              leave back into the job pool. */}
           <Pressable
-            style={[styles.toggle, isAvailable ? styles.toggleOn : styles.toggleOff]}
-            onPress={() => setIsAvailable(!isAvailable)}
+            style={[styles.toggle, isAvailable ? styles.toggleOn : styles.toggleOff, onLeave && styles.toggleLocked]}
+            onPress={() => setWorkerAvailability(workerId, !available)}
+            disabled={onLeave}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: isAvailable, disabled: onLeave }}
             accessibilityLabel="Toggle availability"
           >
             <View style={[styles.knob, isAvailable ? styles.knobOn : styles.knobOff]} />
@@ -136,14 +241,14 @@ export default function WorkerDashboardScreen({ navigation }) {
 
         {/* Your Performance — earnings forward */}
         <View style={styles.section}>
-          <SectionHeader title="Your Performance" />
+          <SectionHeader title={t('your_performance')} />
           <View style={styles.perfCard}>
             <View style={styles.earnRow}>
               <View style={styles.earnIcon}>
                 <IndianRupee size={20} color={colors.success700} strokeWidth={2.4} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.earnLabel}>Total Earnings</Text>
+                <Text style={styles.earnLabel}>{t('total_earnings')}</Text>
                 <Text style={styles.earnValue} numberOfLines={1} adjustsFontSizeToFit>₹{formatValue(worker.earnings)}</Text>
               </View>
             </View>
@@ -154,7 +259,7 @@ export default function WorkerDashboardScreen({ navigation }) {
               <View style={styles.perfMetric}>
                 <View style={styles.perfMetricHead}>
                   <Briefcase size={14} color={colors.primary600} strokeWidth={2.2} />
-                  <Text style={styles.perfMetricLabel}>Jobs</Text>
+                  <Text style={styles.perfMetricLabel}>{t('jobs')}</Text>
                 </View>
                 <Text style={styles.perfMetricValue} numberOfLines={1} adjustsFontSizeToFit>{formatValue(worker.totalJobs)}</Text>
               </View>
@@ -162,7 +267,7 @@ export default function WorkerDashboardScreen({ navigation }) {
               <View style={styles.perfMetric}>
                 <View style={styles.perfMetricHead}>
                   <Star size={14} color={colors.warning600} strokeWidth={2.2} />
-                  <Text style={styles.perfMetricLabel}>Rating</Text>
+                  <Text style={styles.perfMetricLabel}>{t('rating')}</Text>
                 </View>
                 <View style={styles.perfMetricValueRow}>
                   <Text style={styles.perfMetricValue} numberOfLines={1}>{ratingDisplay}</Text>
@@ -173,7 +278,7 @@ export default function WorkerDashboardScreen({ navigation }) {
               <View style={styles.perfMetric}>
                 <View style={styles.perfMetricHead}>
                   <Clock size={14} color={colors.info600} strokeWidth={2.2} />
-                  <Text style={styles.perfMetricLabel}>Queue</Text>
+                  <Text style={styles.perfMetricLabel}>{t('queue')}</Text>
                 </View>
                 <Text style={styles.perfMetricValue} numberOfLines={1} adjustsFontSizeToFit>{queueDisplay}</Text>
               </View>
@@ -183,13 +288,13 @@ export default function WorkerDashboardScreen({ navigation }) {
 
         {/* Worker Benefits */}
         <View style={styles.section}>
-          <SectionHeader title="Worker Benefits" />
+          <SectionHeader title={t('worker_benefits')} />
 
           {/* Two ring cards side by side */}
           <View style={styles.ringRow}>
             {/* Civic Quality Score */}
             <View style={styles.ringCard}>
-              <Text style={styles.ringTitle}>Civic Quality Score</Text>
+              <Text style={styles.ringTitle}>{t('civic_quality_score')}</Text>
               {worker.cibil_score != null ? (
                 <>
                   <ProgressRing value={worker.cibil_score} max={900} size={110} stroke={11} color={cibilColor} trackColor={colors.gray200}>
@@ -197,20 +302,20 @@ export default function WorkerDashboardScreen({ navigation }) {
                     <Text style={styles.ringMax}>/ 900</Text>
                   </ProgressRing>
                   <Text style={[styles.ringCaption, { color: worker.cibil_score > 750 ? colors.success700 : colors.warning700 }]}>
-                    {worker.cibil_score > 750 ? 'Excellent' : 'Improving'}
+                    {worker.cibil_score > 750 ? t('excellent') : t('improving')}
                   </Text>
                   <Text style={styles.ringSub}>
-                    {worker.cibil_score > 750 ? 'Priority jobs eligible' : 'Keep improving'}
+                    {worker.cibil_score > 750 ? t('priority_jobs_eligible') : t('keep_improving')}
                   </Text>
                 </>
               ) : (
-                <View style={styles.ringEmpty}><Text style={styles.ringSub}>Not yet assessed</Text></View>
+                <View style={styles.ringEmpty}><Text style={styles.ringSub}>{t('not_assessed')}</Text></View>
               )}
             </View>
 
             {/* Weekly Hours */}
             <View style={styles.ringCard}>
-              <Text style={styles.ringTitle}>Weekly Hours</Text>
+              <Text style={styles.ringTitle}>{t('weekly_hours')}</Text>
               <ProgressRing value={worker.weekly_hours_worked || 0} max={40} size={110} stroke={11} color={hoursColor} trackColor={colors.gray200}>
                 <Text style={styles.ringValue}>{worker.weekly_hours_worked}h</Text>
                 <Text style={styles.ringMax}>/ 40h</Text>
@@ -222,10 +327,10 @@ export default function WorkerDashboardScreen({ navigation }) {
                 ]}
                 numberOfLines={2}
               >
-                {isAtOvertime ? 'Cap reached' : isNearOvertime ? 'Approaching 40h limit' : 'Healthy work week'}
+                {isAtOvertime ? t('cap_reached') : isNearOvertime ? t('approaching_limit') : t('healthy_week')}
               </Text>
               <Text style={styles.ringSub} numberOfLines={2}>
-                {isAtOvertime ? 'OT only if no other worker (1.5x)' : isNearOvertime ? 'Overtime rules apply soon' : 'Great balance'}
+                {isAtOvertime ? t('ot_note') : isNearOvertime ? t('ot_soon') : t('great_balance')}
               </Text>
             </View>
           </View>
@@ -236,12 +341,12 @@ export default function WorkerDashboardScreen({ navigation }) {
               <Umbrella size={20} color={worker.insurance_eligible ? colors.success600 : colors.warning600} strokeWidth={2.2} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.benefitLabel}>Worker Insurance</Text>
+              <Text style={styles.benefitLabel}>{t('worker_insurance')}</Text>
               <Text style={[styles.benefitValue, { color: worker.insurance_eligible ? colors.success700 : colors.warning700 }]}>
-                {worker.insurance_eligible ? 'Active ✓' : 'Not yet eligible'}
+                {worker.insurance_eligible ? t('insurance_active') : t('insurance_not_eligible')}
               </Text>
               <Text style={styles.benefitSub}>
-                {worker.insurance_eligible ? 'Health + Accident coverage via Cooperative' : 'Eligible after 3 months of service'}
+                {worker.insurance_eligible ? t('insurance_active_desc') : t('insurance_eligible_desc')}
               </Text>
             </View>
           </View>
@@ -254,19 +359,19 @@ export default function WorkerDashboardScreen({ navigation }) {
             <View style={{ flex: 1 }}>
               <View style={styles.leaveHead}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.benefitLabel}>Leave Balance</Text>
+                  <Text style={styles.benefitLabel}>{t('leave_balance')}</Text>
                   <Text style={styles.benefitValue}>
-                    {worker.leave_balance} <Text style={styles.benefitValueSmall}>days left</Text>
+                    {worker.leave_balance} <Text style={styles.benefitValueSmall}>{t('days_left')}</Text>
                   </Text>
                 </View>
                 <Pressable onPress={() => navigation.navigate('WorkerLeave')} hitSlop={8}>
-                  <Text style={styles.leaveApply}>Apply →</Text>
+                  <Text style={styles.leaveApply}>{t('apply_arrow')}</Text>
                 </Pressable>
               </View>
-              <Text style={styles.benefitSub}>30 annual + emergency leaves</Text>
+              <Text style={styles.benefitSub}>{t('leave_annual_note')}</Text>
               {worker.loyalty_bonus_eligible && (
                 <View style={styles.loyaltyStrip}>
-                  <Text style={styles.loyaltyText}>🎁 1-Year Loyalty Bonus: ₹2,500 eligible!</Text>
+                  <Text style={styles.loyaltyText}>{t('loyalty_bonus')}</Text>
                 </View>
               )}
             </View>
@@ -278,10 +383,10 @@ export default function WorkerDashboardScreen({ navigation }) {
           <View style={styles.zoneItem}>
             <MapPin size={15} color={colors.primary600} strokeWidth={2.2} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.zoneLabel}>Your service zone</Text>
+              <Text style={styles.zoneLabel}>{t('your_service_zone')}</Text>
               <Text style={styles.zoneValue} numberOfLines={1}>
-                Tier {worker.tier?.replace('tier', '') || '2'} city •
-                {worker.tier === 'tier1' ? ' Premium zone' : worker.tier === 'tier2' ? ' Standard zone' : ' Rural zone'}
+                Tier {worker.tier?.replace('tier', '') || '2'} •{' '}
+                {worker.tier === 'tier1' ? t('premium_zone') : worker.tier === 'tier2' ? t('standard_zone') : t('rural_zone')}
               </Text>
             </View>
           </View>
@@ -289,17 +394,17 @@ export default function WorkerDashboardScreen({ navigation }) {
           <View style={styles.zoneItem}>
             <Bike size={15} color={colors.accent600} strokeWidth={2.2} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.zoneLabel}>Mobility</Text>
-              <Text style={styles.zoneValue}>Cooperative support</Text>
+              <Text style={styles.zoneLabel}>{t('mobility')}</Text>
+              <Text style={styles.zoneValue}>{t('coop_support')}</Text>
             </View>
-            <Badge variant="primary" size="sm">Active</Badge>
+            <Badge variant="primary" size="sm">{t('active')}</Badge>
           </View>
         </View>
 
         {/* Active job */}
         {activeBooking && (
           <View style={styles.section}>
-            <SectionHeader title="Active Job" />
+            <SectionHeader title={t('active_job')} />
             <View style={styles.activeJobCard}>
               <View style={styles.activeJobAccent} />
               <View style={styles.activeJobBody}>
@@ -319,7 +424,7 @@ export default function WorkerDashboardScreen({ navigation }) {
                   <View style={styles.activeJobGridItem}>
                     <View style={styles.activeJobGridHead}>
                       <UserRound size={12} color={colors.gray400} strokeWidth={2} />
-                      <Text style={styles.activeJobGridLabel}>Customer</Text>
+                      <Text style={styles.activeJobGridLabel}>{t('customer_label')}</Text>
                     </View>
                     <Text style={styles.activeJobGridValue} numberOfLines={1}>{activeBooking.customerName}</Text>
                   </View>
@@ -327,7 +432,7 @@ export default function WorkerDashboardScreen({ navigation }) {
                   <View style={styles.activeJobGridItem}>
                     <View style={styles.activeJobGridHead}>
                       <MapPin size={12} color={colors.gray400} strokeWidth={2} />
-                      <Text style={styles.activeJobGridLabel}>Location</Text>
+                      <Text style={styles.activeJobGridLabel}>{t('location')}</Text>
                     </View>
                     <Text style={styles.activeJobGridValue} numberOfLines={1}>{activeBooking.address.split(',')[0]}</Text>
                   </View>
@@ -335,7 +440,7 @@ export default function WorkerDashboardScreen({ navigation }) {
                   <View style={styles.activeJobGridItem}>
                     <View style={styles.activeJobGridHead}>
                       <CalendarClock size={12} color={colors.gray400} strokeWidth={2} />
-                      <Text style={styles.activeJobGridLabel}>Scheduled</Text>
+                      <Text style={styles.activeJobGridLabel}>{t('scheduled')}</Text>
                     </View>
                     <Text style={styles.activeJobGridValue} numberOfLines={1}>{activeBooking.time}</Text>
                   </View>
@@ -375,20 +480,20 @@ export default function WorkerDashboardScreen({ navigation }) {
             <BookOpen size={22} color={colors.white} strokeWidth={2.1} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.trainingTitle}>Free Training Available</Text>
-            <Text style={styles.trainingSub}>Upgrade skills, earn certificates, unlock better jobs</Text>
+            <Text style={styles.trainingTitle}>{t('free_training_available')}</Text>
+            <Text style={styles.trainingSub}>{t('free_training_desc')}</Text>
           </View>
           <View style={styles.freeBadge}>
-            <Text style={styles.freeBadgeText}>Free</Text>
+            <Text style={styles.freeBadgeText}>{t('free')}</Text>
           </View>
         </Pressable>
 
         {/* Recent jobs */}
         <View style={styles.section}>
-          <SectionHeader title="Recent Jobs" />
+          <SectionHeader title={t('recent_jobs')} />
           {bookings.length === 0 ? (
             <View style={styles.emptyCard}>
-              <Text style={styles.emptyText}>No job history yet. Jobs you complete will appear here.</Text>
+              <Text style={styles.emptyText}>{t('no_job_history')}</Text>
             </View>
           ) : (
             <View style={styles.recentList}>
@@ -413,8 +518,8 @@ export default function WorkerDashboardScreen({ navigation }) {
 
         {/* Community brand message (presentation only) */}
         <View style={styles.communityStrip}>
-          <Text style={styles.communityText}>Stronger Homes, Happier Communities.</Text>
-          <Text style={styles.communitySub}>Seva · Sahyog · Samriddhi</Text>
+          <Text style={styles.communityText}>{t('community_message')}</Text>
+          <Text style={styles.communitySub}>{t('community_motto')}</Text>
         </View>
       </View>
 
@@ -459,13 +564,53 @@ const styles = StyleSheet.create({
   setupTitle: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.gray900 },
   setupText: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interRegular, marginTop: 2 },
 
+  // ---- Free offline training programme ----
+  trainCard: {
+    borderRadius: radii.radiusXl, padding: spacing.space4, borderWidth: 1.5,
+    marginBottom: spacing.space4, gap: spacing.space3, ...shadows.shadowSm,
+  },
+  trainCardActive: { backgroundColor: colors.warning50, borderColor: colors.warning200 },
+  trainCardDone: { backgroundColor: colors.success50, borderColor: colors.success100 },
+  trainHeadRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3 },
+  trainIcon: {
+    width: 38, height: 38, borderRadius: radii.radiusFull, backgroundColor: colors.warning100,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  trainIconDone: { backgroundColor: colors.success100 },
+  trainTitle: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.warning800 },
+  trainTitleDone: { color: colors.success700 },
+  trainSub: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interRegular, marginTop: 2, lineHeight: 16 },
+  trainBarTrack: { height: 7, borderRadius: radii.radiusFull, backgroundColor: colors.warning100, overflow: 'hidden' },
+  trainBarFill: { height: '100%', borderRadius: radii.radiusFull, backgroundColor: colors.warning500 },
+  trainProgressText: { fontSize: fontSizes.fsXs, color: colors.warning800, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold },
+  trainNote: {
+    backgroundColor: colors.surfaceWhite, borderRadius: radii.radiusMd,
+    paddingVertical: spacing.space2, paddingHorizontal: spacing.space3,
+    borderWidth: 1, borderColor: colors.warning100,
+  },
+  trainNoteText: { fontSize: fontSizes.fsXs, color: colors.gray700, fontFamily: fontFamilies.interRegular, lineHeight: 16 },
+  trainBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.space2,
+    paddingVertical: spacing.space3, borderRadius: radii.radiusMd, backgroundColor: colors.warning600,
+  },
+  trainBtnText: { color: colors.white, fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwSemibold, fontFamily: fontFamilies.interSemiBold },
+  trainCertRow: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.space2,
+    backgroundColor: colors.surfaceWhite, borderRadius: radii.radiusMd,
+    paddingVertical: spacing.space2, paddingHorizontal: spacing.space3,
+    borderWidth: 1, borderColor: colors.success100,
+  },
+  trainCertText: { flex: 1, fontSize: fontSizes.fsXs, color: colors.success700, fontFamily: fontFamilies.interMedium, lineHeight: 15 },
+
   // ---- Availability ----
   availCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3, borderRadius: radii.radiusXl, padding: spacing.space4, borderWidth: 1.5, ...shadows.shadowSm },
   availOn: { backgroundColor: colors.success50, borderColor: colors.success100 },
   availOff: { backgroundColor: colors.surfaceWhite, borderColor: colors.gray200 },
+  availLeave: { backgroundColor: colors.warning50, borderColor: colors.warning200 },
   availIcon: { width: 40, height: 40, borderRadius: radii.radiusFull, alignItems: 'center', justifyContent: 'center' },
   availIconOn: { backgroundColor: colors.success100 },
   availIconOff: { backgroundColor: colors.gray100 },
+  availIconLeave: { backgroundColor: colors.warning100 },
   availInfo: { flex: 1 },
   availTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
@@ -474,6 +619,7 @@ const styles = StyleSheet.create({
   toggle: { width: 52, height: 30, borderRadius: 15, padding: 3, justifyContent: 'center' },
   toggleOn: { backgroundColor: colors.success500 },
   toggleOff: { backgroundColor: colors.gray300 },
+  toggleLocked: { opacity: 0.45 },
   knob: { width: 24, height: 24, borderRadius: 12, backgroundColor: colors.white, ...shadows.shadowSm },
   knobOn: { alignSelf: 'flex-end' },
   knobOff: { alignSelf: 'flex-start' },

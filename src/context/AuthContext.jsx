@@ -65,7 +65,7 @@ function authReducer(state, action) {
 // and can make authenticated queries (e.g. reading worker profiles via RLS).
 // Create the admin account manually in the Supabase Dashboard.
 const DEMO_ACCOUNTS = {
-  'demo.customer@sahakar.in': { password: 'demo123', role: 'customer', full_name: 'Rahul Sharma', phone: '+91 98765 43210', city: 'Gurugram' },
+  'demo.customer@sahakar.in': { password: 'demo123', role: 'customer', full_name: 'Rahul Sharma', phone: '+91 98765 43210', city: 'Kolkata' },
   'demo.worker@sahakar.in': { password: 'demo123', role: 'worker', full_name: 'Suresh Kumar', phone: '+91 76543 21098', city: 'Delhi' },
 };
 

@@ -23,8 +23,10 @@ import {
   ArrowRight,
 } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
+import { useLanguage } from '@context/LanguageContext';
 import { CustomerIllustration, WorkerIllustration } from '@components/illustrations/RoleIllustrations';
 import { BrandLogo } from '@components/app';
+import LanguageToggle from '@components/ui/LanguageToggle';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
 
 /**
@@ -45,8 +47,8 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  *  - Premium light theme: soft lavender/cream page instead of the flat dark-indigo card-on-navy.
  *    Subtle layered background blobs replace the web's blurred "orb" divs (solid low-opacity
  *    fills, no native blur dependency added).
- *  - Role picker presented as two spacious cards with an eyebrow label, the SAME bilingual
- *    titles ("सेवा चाहिए" / "सेवा देना है") and English sublines, a circular chevron, and a row
+ *  - Role picker presented as two spacious cards with an eyebrow label, single-language titles
+ *    and sublines (via t(), matching the app language), a circular chevron, and a row
  *    of DECORATIVE-ONLY chips (popular service names for the customer card; benefit labels for
  *    the worker card). Those chips are non-interactive design accents mirroring the reference —
  *    they wire up to NOTHING. Only the card itself is pressable and it still calls
@@ -81,6 +83,7 @@ const WORKER_BENEFIT_CHIPS = [
 
 export default function LoginScreen({ navigation }) {
   const { login, loading } = useAuth();
+  const { t } = useLanguage();
   const insets = useSafeAreaInsets();
 
   const [selectedRole, setSelectedRole] = useState(null);
@@ -104,13 +107,13 @@ export default function LoginScreen({ navigation }) {
 
   const handleLogin = async () => {
     if (!email || !password) {
-      setError('Please enter email and password.');
+      setError(t('enter_email_password'));
       return;
     }
     setError('');
     const result = await login(email, password);
     if (!result.success) {
-      setError(result.error || 'Login failed. Please check your credentials.');
+      setError(result.error || t('login_failed'));
     }
     // On success: no navigate() — RootNavigator switches trees on the role change.
   };
@@ -121,7 +124,7 @@ export default function LoginScreen({ navigation }) {
   };
 
   const roleWord =
-    selectedRole === 'customer' ? 'Customer' : selectedRole === 'worker' ? 'Worker' : 'Admin';
+    selectedRole === 'customer' ? t('customer') : selectedRole === 'worker' ? t('worker') : t('admin');
 
   return (
     <ScrollView
@@ -137,6 +140,11 @@ export default function LoginScreen({ navigation }) {
       <View pointerEvents="none" style={[styles.blob, styles.blobTop]} />
       <View pointerEvents="none" style={[styles.blob, styles.blobBottom]} />
 
+      {/* Language toggle up top so the user can set their language before doing anything else. */}
+      <View style={styles.langBar}>
+        <LanguageToggle size="sm" />
+      </View>
+
       {/* Brand header */}
       <View style={styles.header}>
         <View style={styles.brandRow}>
@@ -148,19 +156,17 @@ export default function LoginScreen({ navigation }) {
             <BrandLogo style={styles.logo} accessibilityLabel="Sahakar Seva logo" />
           </View>
           <View style={styles.brandTextWrap}>
-            <Text style={styles.title}>सहकार सेवा</Text>
-            <Text style={styles.subtitle}>Sahakar Seva · Cooperative Home Services</Text>
+            <Text style={styles.title}>{t('brand_name')}</Text>
+            <Text style={styles.subtitle}>{t('brand_subtitle')}</Text>
           </View>
         </View>
-        <Text style={styles.tagline}>घर की हर ज़रूरत, भरोसे के साथ।</Text>
-        <Text style={styles.taglineEn}>Trusted help for your home.</Text>
+        <Text style={styles.tagline}>{t('brand_tagline')}</Text>
       </View>
 
       {!selectedRole ? (
         <View style={styles.roleSelect}>
           <View style={styles.promptWrap}>
-            <Text style={styles.promptHi}>आप यहाँ क्या करना चाहते हैं?</Text>
-            <Text style={styles.promptEn}>How can we help you today?</Text>
+            <Text style={styles.promptHi}>{t('role_prompt')}</Text>
           </View>
 
           {/* Customer role card */}
@@ -168,17 +174,16 @@ export default function LoginScreen({ navigation }) {
             style={({ pressed }) => [styles.roleCard, styles.customerCard, pressed && styles.rolePressed]}
             onPress={() => handleRoleSelect('customer')}
             accessibilityRole="button"
-            accessibilityLabel="सेवा चाहिए — I need a home service"
+            accessibilityLabel={t('need_service')}
           >
-            <Text style={[styles.eyebrow, styles.eyebrowCustomer]}>For Homeowners</Text>
+            <Text style={[styles.eyebrow, styles.eyebrowCustomer]}>{t('for_homeowners')}</Text>
             <View style={styles.roleTopRow}>
               <View style={[styles.roleIcon, styles.customerIcon]}>
                 <User size={26} color={colors.primary700} strokeWidth={2.2} />
               </View>
               <View style={styles.roleTextWrap}>
-                <Text style={styles.roleTitle}>सेवा चाहिए</Text>
-                <Text style={styles.roleSub}>I need a home service</Text>
-                <Text style={styles.roleTag}>Find trusted professionals</Text>
+                <Text style={styles.roleTitle}>{t('need_service')}</Text>
+                <Text style={styles.roleTag}>{t('find_professionals')}</Text>
               </View>
               {/* DECORATIVE illustration (react-native-svg) */}
               <View style={styles.illustrationWrap} pointerEvents="none">
@@ -207,17 +212,16 @@ export default function LoginScreen({ navigation }) {
             style={({ pressed }) => [styles.roleCard, styles.workerCard, pressed && styles.rolePressed]}
             onPress={() => handleRoleSelect('worker')}
             accessibilityRole="button"
-            accessibilityLabel="सेवा देना है — I am a skilled worker"
+            accessibilityLabel={t('offer_service')}
           >
-            <Text style={[styles.eyebrow, styles.eyebrowWorker]}>For Skilled Workers</Text>
+            <Text style={[styles.eyebrow, styles.eyebrowWorker]}>{t('for_skilled_workers')}</Text>
             <View style={styles.roleTopRow}>
               <View style={[styles.roleIcon, styles.workerIcon]}>
                 <Wrench size={26} color={colors.accent700} strokeWidth={2.2} />
               </View>
               <View style={styles.roleTextWrap}>
-                <Text style={styles.roleTitle}>सेवा देना है</Text>
-                <Text style={styles.roleSub}>I am a skilled worker</Text>
-                <Text style={styles.roleTag}>Offer your services, earn &amp; grow</Text>
+                <Text style={styles.roleTitle}>{t('offer_service')}</Text>
+                <Text style={styles.roleTag}>{t('offer_service_tag')}</Text>
               </View>
               {/* DECORATIVE illustration (react-native-svg) */}
               <View style={styles.illustrationWrap} pointerEvents="none">
@@ -242,19 +246,19 @@ export default function LoginScreen({ navigation }) {
 
           {/* Why Sahakar Seva? — decorative trust row */}
           <View style={styles.trustBlock}>
-            <Text style={styles.trustHeading}>Why Sahakar Seva?</Text>
+            <Text style={styles.trustHeading}>{t('why_brand')}</Text>
             <View style={styles.trustRow} pointerEvents="none">
               <View style={styles.trustItem}>
                 <BadgeCheck size={16} color={colors.success600} strokeWidth={2.1} />
-                <Text style={styles.trustText}>Verified workers</Text>
+                <Text style={styles.trustText}>{t('verified_workers')}</Text>
               </View>
               <View style={styles.trustItem}>
                 <MapPin size={16} color={colors.primary600} strokeWidth={2.1} />
-                <Text style={styles.trustText}>Local services</Text>
+                <Text style={styles.trustText}>{t('local_services')}</Text>
               </View>
               <View style={styles.trustItem}>
                 <Shield size={16} color={colors.accent600} strokeWidth={2.1} />
-                <Text style={styles.trustText}>Trusted</Text>
+                <Text style={styles.trustText}>{t('trusted')}</Text>
               </View>
             </View>
           </View>
@@ -265,15 +269,15 @@ export default function LoginScreen({ navigation }) {
             style={({ pressed }) => [styles.adminCard, pressed && styles.adminCardPressed]}
             onPress={() => handleRoleSelect('admin')}
             accessibilityRole="button"
-            accessibilityLabel="Admin / Prashasan Access — official administrative portal"
+            accessibilityLabel={t('admin_access')}
           >
             <View style={styles.adminIconWrap}>
               <Landmark size={24} color={colors.white} strokeWidth={2.1} />
             </View>
             <View style={styles.adminTextWrap}>
-              <Text style={styles.adminEyebrow}>FOR OFFICIAL USE</Text>
-              <Text style={styles.adminTitle}>Admin / Prashasan Access</Text>
-              <Text style={styles.adminDesc}>Manage users, services &amp; platform</Text>
+              <Text style={styles.adminEyebrow}>{t('for_official_use')}</Text>
+              <Text style={styles.adminTitle}>{t('admin_access')}</Text>
+              <Text style={styles.adminDesc}>{t('admin_access_desc')}</Text>
             </View>
             <View style={styles.adminArrow}>
               <ArrowRight size={20} color={colors.primary700} strokeWidth={2.4} />
@@ -290,17 +294,17 @@ export default function LoginScreen({ navigation }) {
                 <Phone size={16} color={colors.primary700} strokeWidth={2.2} />
               </View>
               <View style={styles.helplineTextWrap}>
-                <Text style={styles.helplineCardLabel}>Need help? हमें कॉल करें (24x7)</Text>
+                <Text style={styles.helplineCardLabel}>{t('need_help_call')}</Text>
                 <Text style={styles.helplineCardNumber}>1800-XXX-SEVA</Text>
               </View>
             </View>
             <View style={styles.callBtn}>
               <Phone size={14} color={colors.white} strokeWidth={2.4} />
-              <Text style={styles.callBtnText}>Call Now</Text>
+              <Text style={styles.callBtnText}>{t('call_now')}</Text>
             </View>
           </Pressable>
 
-          <Text style={styles.footerNote}>सुरक्षित · सहकारी · भरोसेमंद</Text>
+          <Text style={styles.footerNote}>{t('footer_note')}</Text>
         </View>
       ) : (
         <View style={styles.formCard}>
@@ -312,7 +316,7 @@ export default function LoginScreen({ navigation }) {
             style={styles.backBtn}
           >
             <ChevronRight size={16} color={colors.primary600} style={styles.backChevron} strokeWidth={2.4} />
-            <Text style={styles.back}>Back</Text>
+            <Text style={styles.back}>{t('back')}</Text>
           </Pressable>
 
           <View style={[styles.rolePill, styles[`rolePill_${selectedRole}`]]}>
@@ -324,11 +328,7 @@ export default function LoginScreen({ navigation }) {
               <Shield size={14} color={colors.danger700} />
             )}
             <Text style={[styles.rolePillText, styles[`rolePillText_${selectedRole}`]]}>
-              {selectedRole === 'customer'
-                ? 'Customer / ग्राहक'
-                : selectedRole === 'worker'
-                ? 'Worker / श्रमिक'
-                : 'Admin / प्रशासन'}
+              {roleWord}
             </Text>
           </View>
 
@@ -339,7 +339,7 @@ export default function LoginScreen({ navigation }) {
           ) : null}
 
           <View style={styles.field}>
-            <Text style={styles.fieldLabel}>Email Address</Text>
+            <Text style={styles.fieldLabel}>{t('email_address')}</Text>
             <TextInput
               style={styles.input}
               value={email}
@@ -353,7 +353,7 @@ export default function LoginScreen({ navigation }) {
           </View>
 
           <View style={styles.field}>
-            <Text style={styles.fieldLabel}>Password</Text>
+            <Text style={styles.fieldLabel}>{t('password')}</Text>
             <View style={styles.pwWrap}>
               <TextInput
                 style={[styles.input, styles.pwInput]}
@@ -378,24 +378,22 @@ export default function LoginScreen({ navigation }) {
             {loading ? (
               <ActivityIndicator size="small" color={colors.white} />
             ) : (
-              <Text style={styles.submitText}>Sign In as {roleWord}</Text>
+              <Text style={styles.submitText}>{t('sign_in_as', { role: roleWord })}</Text>
             )}
           </Pressable>
 
           <Text style={styles.hint}>
-            {selectedRole === 'admin'
-              ? '🔐 Enter your Supabase admin credentials to sign in.'
-              : '🚀 Demo credentials pre-filled — just tap Sign In!'}
+            {selectedRole === 'admin' ? t('hint_admin') : t('hint_demo')}
           </Text>
 
           {selectedRole !== 'admin' && (
             <Text style={styles.switch}>
-              New to Sahakar Seva?{' '}
+              {t('new_to_brand')}{' '}
               <Text
                 style={styles.switchLink}
                 onPress={() => navigation.navigate('Register', { role: selectedRole })}
               >
-                Create Account →
+                {t('create_account_link')}
               </Text>
             </Text>
           )}
@@ -403,7 +401,7 @@ export default function LoginScreen({ navigation }) {
           <View style={styles.helpline}>
             <Phone size={12} color={colors.gray400} />
             <Text style={styles.helplineText}>
-              Helpline: <Text style={styles.helplineStrong}>1800-XXX-SEVA</Text> (24x7 Toll-Free)
+              {t('helpline_label')} <Text style={styles.helplineStrong}>1800-XXX-SEVA</Text> {t('helpline_toll_free')}
             </Text>
           </View>
         </View>
@@ -439,6 +437,12 @@ const styles = StyleSheet.create({
     bottom: -160,
     left: -120,
     backgroundColor: 'rgba(251,191,36,0.12)', // accent400 wash
+  },
+
+  // ---- Language bar ----
+  langBar: {
+    alignSelf: 'flex-end',
+    marginBottom: spacing.space3,
   },
 
   // ---- Brand header ----

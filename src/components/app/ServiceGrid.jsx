@@ -1,5 +1,7 @@
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { serviceIcon } from '@components/icons';
+import { useLanguage } from '@context/LanguageContext';
+import { serviceName } from '@data/mockServices';
 import { colors, spacing, radii, fontSizes, fontWeights, fontFamilies } from '@theme';
 
 /**
@@ -15,6 +17,7 @@ import { colors, spacing, radii, fontSizes, fontWeights, fontFamilies } from '@t
  * Original styling on the app's own palette; the grid PATTERN is the borrowed idea.
  */
 export default function ServiceGrid({ services, columns = 4, showPrice = false, onSelect }) {
+  const { t } = useLanguage();
   return (
     <View style={styles.grid}>
       {services.map((s) => {
@@ -29,7 +32,7 @@ export default function ServiceGrid({ services, columns = 4, showPrice = false, 
               <Icon size={26} color={s.color} />
             </View>
             <Text style={styles.name} numberOfLines={2}>
-              {s.name}
+              {serviceName(s, t)}
             </Text>
             {showPrice && <Text style={styles.price}>₹{s.basePrice}</Text>}
           </Pressable>

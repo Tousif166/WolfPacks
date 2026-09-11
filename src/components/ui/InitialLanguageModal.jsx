@@ -1,78 +1,67 @@
 import { useState, useEffect } from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { Globe } from 'lucide-react-native';
 import { useLanguage } from '@context/LanguageContext';
+import { LANGUAGES } from '@data/translations';
+import LanguageToggle from './LanguageToggle';
 import Modal from './Modal';
 import Button from './Button';
-import { colors, spacing, radii, fontSizes, fontWeights, fontFamilies } from '@theme';
+import { colors, spacing, fontSizes, fontWeights, fontFamilies } from '@theme';
 
 /**
- * InitialLanguageModal — ported from web components/ui/InitialLanguageModal.jsx +
- * InitialLanguageModal.css.
+ * InitialLanguageModal — shown once on first launch when LanguageContext.language is null.
  *
- * Same behaviour: shows once on first launch when LanguageContext.language is null, lets the
- * user pick EN/HI/BN, and the welcome heading is shown in the currently-highlighted language's
- * script. Confirm writes the choice to the context (which persists it to MMKV).
+ * REVAMP: this used to have its OWN grid of language buttons (one of the four parallel selectors),
+ * and its subtitle/confirm button hardcoded two languages in one string
+ * ("Please select... / कृपया अपनी..."). Both are gone:
+ *   - the picker is now the SAME canonical <LanguageToggle> used in the header and profile, so
+ *     first-launch selection looks identical to changing language later;
+ *   - the heading is shown in the currently-highlighted language's own script (using that
+ *     language's welcome string + its bundled font), and the subtitle/button use t() so exactly
+ *     one language shows at a time.
  *
- * The welcome strings are rendered with the matching bundled font per script (Noto Sans
- * Devanagari for Hindi, Noto Sans Bengali for Bengali, Inter for English) — this is exactly
- * the tier-1 font requirement from Phase 2 in action.
- *
- * 3-col grid (desktop) collapsed to the mobile branch (single column, row layout per button)
- * from the CSS 640px media query, per the plan.
+ * The context starts as null (nothing chosen), so t() falls back to English until the user picks.
+ * To keep the picker meaningful before a choice is committed, we track a local `preview` language
+ * for the heading font/text only; tapping a segment sets the real app language immediately (which
+ * is fine — it re-renders live and Continue simply dismisses).
  */
-
-const LANGUAGES = [
-  { code: 'en', label: 'English', flag: '🇬🇧', welcome: 'Welcome to Sahakar Seva', font: fontFamilies.interBold },
-  { code: 'hi', label: 'हिन्दी', flag: '🇮🇳', welcome: 'सहकार सेवा में आपका स्वागत है', font: fontFamilies.notoDevanagariBold },
-  { code: 'bn', label: 'বাংলা', flag: '🇧🇩', welcome: 'সহকার সেবায় স্বাগতম', font: fontFamilies.notoBengaliBold },
-];
-
 export default function InitialLanguageModal() {
-  const { language, setLanguage } = useLanguage();
+  const { language, resolvedLanguage, setLanguage, t } = useLanguage();
   const [isOpen, setIsOpen] = useState(false);
-  const [tempLang, setTempLang] = useState('en');
 
   useEffect(() => {
     if (!language) setIsOpen(true);
   }, [language]);
 
   const handleConfirm = () => {
-    setLanguage(tempLang);
+    // Guarantee a concrete choice is persisted even if the user never tapped a segment.
+    if (!language) setLanguage(resolvedLanguage);
     setIsOpen(false);
   };
 
   if (!isOpen) return null;
 
-  const selected = LANGUAGES.find((l) => l.code === tempLang);
+  const selected = LANGUAGES.find((l) => l.code === resolvedLanguage) || LANGUAGES[0];
+  const headingFont =
+    selected.code === 'hi'
+      ? fontFamilies.notoDevanagariBold
+      : selected.code === 'bn'
+      ? fontFamilies.notoBengaliBold
+      : fontFamilies.interBold;
 
   return (
     <Modal isOpen={isOpen} onClose={() => {}} title="" hideClose>
       <View style={styles.container}>
         <Globe size={48} color={colors.primary500} style={styles.icon} />
-        <Text style={[styles.welcome, { fontFamily: selected?.font }]}>{selected?.welcome}</Text>
-        <Text style={styles.subtitle}>
-          Please select your preferred language / कृपया अपनी पसंदीदा भाषा चुनें
-        </Text>
+        <Text style={[styles.welcome, { fontFamily: headingFont }]}>{selected.welcome}</Text>
+        <Text style={styles.subtitle}>{t('select_language')}</Text>
 
-        <View style={styles.grid}>
-          {LANGUAGES.map((lang) => {
-            const active = tempLang === lang.code;
-            return (
-              <Pressable
-                key={lang.code}
-                style={[styles.langBtn, active && styles.langBtnActive]}
-                onPress={() => setTempLang(lang.code)}
-              >
-                <Text style={styles.langFlag}>{lang.flag}</Text>
-                <Text style={styles.langLabel}>{lang.label}</Text>
-              </Pressable>
-            );
-          })}
+        <View style={styles.toggleWrap}>
+          <LanguageToggle size="md" />
         </View>
 
         <Button variant="primary" size="lg" fullWidth onPress={handleConfirm} style={styles.confirm}>
-          Continue / जारी रखें
+          {t('continue')}
         </Button>
       </View>
     </Modal>
@@ -101,35 +90,9 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: spacing.space6,
   },
-  grid: {
+  toggleWrap: {
     width: '100%',
-    gap: spacing.space3,
     marginTop: spacing.space2,
-  },
-  langBtn: {
-    flexDirection: 'row', // mobile branch (640px media query)
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.space3,
-    paddingVertical: spacing.space4,
-    paddingHorizontal: spacing.space4,
-    borderWidth: 2,
-    borderColor: colors.gray200,
-    borderRadius: radii.radiusLg,
-    backgroundColor: colors.white,
-  },
-  langBtnActive: {
-    borderColor: colors.primary500,
-    backgroundColor: colors.primary50,
-  },
-  langFlag: {
-    fontSize: 32,
-  },
-  langLabel: {
-    fontSize: fontSizes.fsBase,
-    fontWeight: fontWeights.fwMedium,
-    fontFamily: fontFamilies.interMedium,
-    color: colors.gray800,
   },
   confirm: {
     marginTop: spacing.space6,

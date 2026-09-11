@@ -4,6 +4,7 @@ import { BookOpen, Play, CheckCircle, Clock, MapPin, Award, FileText, WifiOff } 
 import { ScreenContainer } from '@components/app';
 import { Chip, ChipRow } from '@components/app';
 import Badge from '@components/ui/Badge';
+import { useLanguage } from '@context/LanguageContext';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
 
 /**
@@ -12,12 +13,15 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  * list, and the offline WifiOff indicator. enroll setTimeout + filter logic preserved verbatim.
  */
 
+// Course titles are referenced by translation key (titleKey) and resolved via t() at render time,
+// so a card shows ONE localized title instead of the previous English + Hindi lines stacked
+// together. The 'center' names are proper nouns (Seva Kendra locations) and stay as-is.
 const COURSES = [
-  { id: 1, title: 'Plumbing Fundamentals', titleHi: 'प्लम्बिंग बुनियादी', duration: '40 hrs', level: 'Beginner', type: 'offline', center: 'Delhi Seva Kendra, Rohini', enrolled: true, progress: 65, modules: 12, completed: 8, cert: false, icon: '🔧', color: '#3b82f6' },
-  { id: 2, title: 'Electrical Safety & Wiring', titleHi: 'विद्युत सुरक्षा', duration: '50 hrs', level: 'Beginner', type: 'hybrid', center: 'Gurugram ITI Campus', enrolled: false, progress: 0, modules: 15, completed: 0, cert: false, icon: '⚡', color: '#f59e0b' },
-  { id: 3, title: 'AC Repair & Refrigeration', titleHi: 'एसी मरम्मत', duration: '60 hrs', level: 'Intermediate', type: 'offline', center: 'NSDC Partner Center, Noida', enrolled: false, progress: 0, modules: 18, completed: 0, cert: false, icon: '❄️', color: '#06b6d4' },
-  { id: 4, title: 'Home Cleaning & Hygiene', titleHi: 'सफाई प्रशिक्षण', duration: '20 hrs', level: 'Beginner', type: 'online', center: 'Online Only', enrolled: true, progress: 100, modules: 8, completed: 8, cert: true, icon: '🧹', color: '#10b981' },
-  { id: 5, title: 'Carpentry & Woodwork Basics', titleHi: 'बढ़ईगिरी', duration: '45 hrs', level: 'Beginner', type: 'offline', center: 'Jaipur Skill Hub', enrolled: false, progress: 0, modules: 14, completed: 0, cert: false, icon: '🔨', color: '#ef4444' },
+  { id: 1, titleKey: 'course_plumbing', duration: '40 hrs', level: 'Beginner', type: 'offline', center: 'Delhi Seva Kendra, Rohini', enrolled: true, progress: 65, modules: 12, completed: 8, cert: false, icon: '🔧', color: '#3b82f6' },
+  { id: 2, titleKey: 'course_electrical', duration: '50 hrs', level: 'Beginner', type: 'hybrid', center: 'Gurugram ITI Campus', enrolled: false, progress: 0, modules: 15, completed: 0, cert: false, icon: '⚡', color: '#f59e0b' },
+  { id: 3, titleKey: 'course_ac', duration: '60 hrs', level: 'Intermediate', type: 'offline', center: 'NSDC Partner Center, Noida', enrolled: false, progress: 0, modules: 18, completed: 0, cert: false, icon: '❄️', color: '#06b6d4' },
+  { id: 4, titleKey: 'course_cleaning', duration: '20 hrs', level: 'Beginner', type: 'online', center: 'Online Only', enrolled: true, progress: 100, modules: 8, completed: 8, cert: true, icon: '🧹', color: '#10b981' },
+  { id: 5, titleKey: 'course_carpentry', duration: '45 hrs', level: 'Beginner', type: 'offline', center: 'Jaipur Skill Hub', enrolled: false, progress: 0, modules: 14, completed: 0, cert: false, icon: '🔨', color: '#ef4444' },
 ];
 
 const SEVA_KENDRAS = [
@@ -32,6 +36,7 @@ const LEVEL_VARIANTS = { Beginner: 'success', Intermediate: 'warning', Advanced:
 const FILTERS = ['all', 'enrolled', 'offline', 'online', 'hybrid'];
 
 export default function WorkerTrainingPortalScreen() {
+  const { t } = useLanguage();
   const [filter, setFilter] = useState('all');
   const [enrolling, setEnrolling] = useState(null);
   const [courses, setCourses] = useState(COURSES);
@@ -55,25 +60,25 @@ export default function WorkerTrainingPortalScreen() {
 
   return (
     <ScreenContainer>
-      <Text style={styles.h1}>🎓 Training Portal</Text>
-      <Text style={styles.sub}>कौशल विकास प्रशिक्षण • Skill Development</Text>
+      <Text style={styles.h1}>🎓 {t('training_portal')}</Text>
+      <Text style={styles.sub}>{t('skill_development')}</Text>
 
       <View style={styles.internBadge}>
         <Award size={14} color={colors.warning800} />
-        <Text style={styles.internText}>Internship Program • Government-Certified</Text>
+        <Text style={styles.internText}>{t('internship_program')}</Text>
       </View>
 
       {/* Offline indicator (preserved from web WifiOff affordance) */}
       <View style={styles.offlineRow}>
         <WifiOff size={13} color={colors.gray400} />
-        <Text style={styles.offlineText}>Course content available offline at Seva Kendras</Text>
+        <Text style={styles.offlineText}>{t('offline_note')}</Text>
       </View>
 
       {/* Stats */}
       <View style={styles.statsRow}>
-        <Stat value={enrolledCount} label="Enrolled" />
-        <Stat value={certCount} label="Certificates" />
-        <Stat value={`${avgProgress}%`} label="Avg. Progress" />
+        <Stat value={enrolledCount} label={t('enrolled')} />
+        <Stat value={certCount} label={t('certificates')} />
+        <Stat value={`${avgProgress}%`} label={t('avg_progress')} />
       </View>
 
       {/* Filters */}
@@ -81,7 +86,7 @@ export default function WorkerTrainingPortalScreen() {
         {FILTERS.map((f) => (
           <Chip
             key={f}
-            label={f === 'all' ? 'All Courses' : f === 'enrolled' ? 'My Courses' : TYPE_LABELS[f] || f}
+            label={f === 'all' ? t('all_courses') : f === 'enrolled' ? t('my_courses') : TYPE_LABELS[f] || f}
             selected={filter === f}
             onPress={() => setFilter(f)}
           />
@@ -102,12 +107,11 @@ export default function WorkerTrainingPortalScreen() {
               </View>
             </View>
 
-            <Text style={styles.courseTitle}>{course.title}</Text>
-            <Text style={styles.courseHindi}>{course.titleHi}</Text>
+            <Text style={styles.courseTitle}>{t(course.titleKey)}</Text>
 
             <View style={styles.courseMeta}>
               <View style={styles.metaItem}><Clock size={12} color={colors.gray400} /><Text style={styles.metaText}>{course.duration}</Text></View>
-              <View style={styles.metaItem}><BookOpen size={12} color={colors.gray400} /><Text style={styles.metaText}>{course.modules} Modules</Text></View>
+              <View style={styles.metaItem}><BookOpen size={12} color={colors.gray400} /><Text style={styles.metaText}>{course.modules} {t('modules')}</Text></View>
               {course.type !== 'online' && (
                 <View style={styles.metaItem}><MapPin size={12} color={colors.gray400} /><Text style={styles.metaText} numberOfLines={1}>{course.center}</Text></View>
               )}
@@ -118,14 +122,14 @@ export default function WorkerTrainingPortalScreen() {
                 <View style={styles.progressTrack}>
                   <View style={[styles.progressFill, { width: `${course.progress}%`, backgroundColor: course.color }]} />
                 </View>
-                <Text style={styles.progressText}>{course.progress}% • {course.completed}/{course.modules} modules</Text>
+                <Text style={styles.progressText}>{course.progress}% • {course.completed}/{course.modules} {t('modules_lc')}</Text>
               </View>
             )}
 
             {course.cert && (
               <View style={styles.certEarned}>
                 <CheckCircle size={14} color={colors.success600} />
-                <Text style={styles.certEarnedText}>Certificate Earned! Download →</Text>
+                <Text style={styles.certEarnedText}>{t('cert_earned')}</Text>
               </View>
             )}
 
@@ -133,20 +137,20 @@ export default function WorkerTrainingPortalScreen() {
               {course.enrolled ? (
                 <Pressable style={[styles.enrollBtn, { backgroundColor: course.color }]}>
                   <Play size={15} color={colors.white} />
-                  <Text style={styles.enrollBtnText}>{course.progress === 100 ? 'Review' : 'Continue →'}</Text>
+                  <Text style={styles.enrollBtnText}>{course.progress === 100 ? t('review') : t('continue_arrow')}</Text>
                 </Pressable>
               ) : (
                 <Pressable style={styles.enrollBtn} onPress={() => handleEnroll(course.id)} disabled={enrolling === course.id}>
                   {enrolling === course.id ? (
                     <ActivityIndicator size="small" color={colors.white} />
                   ) : (
-                    <Text style={styles.enrollBtnText}>Enroll Free</Text>
+                    <Text style={styles.enrollBtnText}>{t('enroll_free')}</Text>
                   )}
                 </Pressable>
               )}
               <Pressable style={styles.syllabusBtn}>
                 <FileText size={15} color={colors.gray600} />
-                <Text style={styles.syllabusText}>Syllabus</Text>
+                <Text style={styles.syllabusText}>{t('syllabus')}</Text>
               </Pressable>
             </View>
           </View>
@@ -155,8 +159,8 @@ export default function WorkerTrainingPortalScreen() {
 
       {/* Seva Kendras */}
       <View style={styles.kendraSection}>
-        <Text style={styles.kendraTitle}>🏢 Nearest Offline Seva Kendras</Text>
-        <Text style={styles.sub}>Visit any center for in-person registration & training support</Text>
+        <Text style={styles.kendraTitle}>🏢 {t('nearest_kendras')}</Text>
+        <Text style={styles.sub}>{t('kendra_sub')}</Text>
         <View style={styles.kendraList}>
           {SEVA_KENDRAS.map((k) => (
             <View key={k.city} style={styles.kendraCard}>

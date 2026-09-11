@@ -306,7 +306,7 @@ export default function AdminDashboardScreen({ navigation }) {
             tone="emerald"
             prefix="₹"
             grouped
-            trend="Booking revenue"
+            trend={t('booking_revenue')}
           />
         </View>
         <View style={styles.statCell}>
@@ -344,21 +344,21 @@ export default function AdminDashboardScreen({ navigation }) {
             icon={TrendingUp}
             tone="lavender"
             title={t('demand_forecast_ai')}
-            sub="Predict demand spikes with AI"
+            sub={t('predict_demand')}
             onPress={() => navigation.navigate('AdminForecast')}
           />
           <QuickActionCard
             icon={Users}
             tone="mint"
             title={t('manage_workers')}
-            sub={`${totalWorkers} registered • ${activeWorkers} online`}
+            sub={t('registered_online', { total: totalWorkers, active: activeWorkers })}
             onPress={() => navigation.navigate('AdminWorkers')}
           />
           <QuickActionCard
             icon={AlertTriangle}
             tone="rose"
             title={t('view_complaints')}
-            sub={`${openComplaints} issues pending review`}
+            sub={t('issues_pending', { count: openComplaints })}
             badge={openComplaints > 0 ? openComplaints : null}
             onPress={() => navigation.navigate('AdminComplaints')}
           />
@@ -428,6 +428,7 @@ function dayKey(year, month, day) {
 }
 
 function CalendarSheet({ visible, onClose, viewMonth, setViewMonth, selectedDay, setSelectedDay, bookingsByDay }) {
+  const { t } = useLanguage();
   const { year, month } = viewMonth;
   const todayKey = dayKey(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
 
@@ -459,7 +460,7 @@ function CalendarSheet({ visible, onClose, viewMonth, setViewMonth, selectedDay,
         <View style={styles.calSheet}>
           {/* Sheet header */}
           <View style={styles.calSheetHead}>
-            <Text style={styles.calSheetTitle}>Calendar</Text>
+            <Text style={styles.calSheetTitle}>{t('calendar')}</Text>
             <Pressable onPress={onClose} hitSlop={8} style={styles.calCloseBtn} accessibilityLabel="Close">
               <X size={20} color={colors.gray600} />
             </Pressable>
@@ -518,11 +519,11 @@ function CalendarSheet({ visible, onClose, viewMonth, setViewMonth, selectedDay,
                 <View style={styles.calSummaryRow}>
                   <View style={styles.calSummaryPill}>
                     <Text style={styles.calSummaryValue}>{selectedList.length}</Text>
-                    <Text style={styles.calSummaryLabel}>Bookings</Text>
+                    <Text style={styles.calSummaryLabel}>{t('bookings_label')}</Text>
                   </View>
                   <View style={styles.calSummaryPill}>
                     <Text style={styles.calSummaryValue}>₹{selectedRevenue.toLocaleString()}</Text>
-                    <Text style={styles.calSummaryLabel}>Revenue</Text>
+                    <Text style={styles.calSummaryLabel}>{t('revenue_label')}</Text>
                   </View>
                 </View>
 
@@ -544,11 +545,11 @@ function CalendarSheet({ visible, onClose, viewMonth, setViewMonth, selectedDay,
                     ))}
                   </ScrollView>
                 ) : (
-                  <Text style={styles.calEmpty}>No bookings on this day.</Text>
+                  <Text style={styles.calEmpty}>{t('no_bookings_day')}</Text>
                 )}
               </>
             ) : (
-              <Text style={styles.calHint}>Tap a date to see that day&apos;s bookings and revenue.</Text>
+              <Text style={styles.calHint}>{t('tap_date_hint')}</Text>
             )}
           </View>
         </View>
@@ -650,6 +651,7 @@ function smoothPath(points) {
 }
 
 function RevenueChart({ series, label }) {
+  const { t } = useLanguage();
   const [width, setWidth] = useState(0);
   // View-local active node for the tap-to-reveal callout (presentation only; touches no data).
   // Defaults to the peak so a callout is visible on load, matching the "active node" reference.
@@ -690,7 +692,7 @@ function RevenueChart({ series, label }) {
           <Text style={styles.chartTitle}>{label}</Text>
           {/* States exactly what the series is — no implied period comparison. */}
           <Text style={styles.chartSub} numberOfLines={1}>
-            By booking date • last {series.length} active days
+            {t('by_booking_date', { n: series.length })}
           </Text>
         </View>
         <View style={styles.chartTotalPill}>
@@ -701,7 +703,7 @@ function RevenueChart({ series, label }) {
       {/* Plot area with a vertical Y-axis label to its left. */}
       <View style={styles.chartPlotRow}>
         <View style={styles.yAxisWrap} pointerEvents="none">
-          <Text style={styles.axisLabelY} numberOfLines={1}>Revenue (₹)</Text>
+          <Text style={styles.axisLabelY} numberOfLines={1}>{t('revenue_axis')}</Text>
         </View>
 
         <View style={styles.chartBody} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
@@ -795,7 +797,7 @@ function RevenueChart({ series, label }) {
       </View>
 
       {/* X-axis label. */}
-      <Text style={styles.axisLabelX}>Last 7 Days</Text>
+      <Text style={styles.axisLabelX}>{t('last_7_days')}</Text>
     </View>
   );
 }

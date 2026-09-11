@@ -1,29 +1,28 @@
 // Mock routes for the live tracking map
 // Each route is an array of [lat, lng] waypoints that a worker marker follows
-// Using Delhi/Gurugram area coordinates for realism
+//
+// NOTE: nothing currently imports this file — LiveTrackingMapScreen defines its own
+// CUSTOMER_ROUTE (with per-step status keys, which these plain waypoint pairs cannot carry).
+// route1 is kept in sync with that screen's Kolkata route so the two never disagree; routes 2–3
+// remain Delhi examples.
 
 export const mockRoutes = [
   {
     id: 'route1',
-    name: 'Sector 29 → Sector 45, Gurugram',
-    totalDuration: 30, // seconds for demo (represents ~20 min in reality)
-    customerLocation: [28.4595, 77.0266],
-    workerStart: [28.4689, 77.0413],
+    name: 'Ruby General Hospital → Heritage Institute of Technology, Kolkata',
+    totalDuration: 30, // seconds for demo (represents ~7 min in reality)
+    customerLocation: [22.51653, 88.41821],
+    workerStart: [22.5135, 88.4030],
     waypoints: [
-      [28.4689, 77.0413],
-      [28.4680, 77.0400],
-      [28.4672, 77.0385],
-      [28.4665, 77.0370],
-      [28.4658, 77.0355],
-      [28.4650, 77.0340],
-      [28.4643, 77.0328],
-      [28.4636, 77.0315],
-      [28.4628, 77.0305],
-      [28.4620, 77.0295],
-      [28.4613, 77.0285],
-      [28.4607, 77.0278],
-      [28.4600, 77.0270],
-      [28.4595, 77.0266]
+      [22.5135, 88.4030],
+      [22.5131, 88.4056],
+      [22.5124, 88.4084],
+      [22.5119, 88.4110],
+      [22.5120, 88.4137],
+      [22.5131, 88.4159],
+      [22.5145, 88.4172],
+      [22.5157, 88.4179],
+      [22.51653, 88.41821]
     ]
   },
   {

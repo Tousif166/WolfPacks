@@ -18,8 +18,12 @@ export const mockWorkers = [
       { name: 'Safety Training Certificate', issuer: 'NSDC', date: '2024-01-20' }
     ],
     joinDate: '2024-03-15',
+    // NOTE: the approved entry is deliberately in the PAST. w1 is the 'demo-worker' login, and an
+    // approved leave covering today would take this worker out of the job pool and lock their
+    // ONLINE/OFFLINE toggle, making that feature impossible to demo. Meena (w3) carries the
+    // currently-active approved leave instead.
     leaveRequests: [
-      { id: 'lr1', startDate: '2026-09-10', endDate: '2026-09-12', reason: 'Family function', status: 'approved' },
+      { id: 'lr1', startDate: '2026-09-03', endDate: '2026-09-05', reason: 'Family function', status: 'approved' },
       { id: 'lr2', startDate: '2026-09-20', endDate: '2026-09-20', reason: 'Medical appointment', status: 'pending' }
     ]
   },
@@ -62,8 +66,10 @@ export const mockWorkers = [
       { name: 'Hygiene Training Certificate', issuer: 'FSSAI', date: '2024-03-01' }
     ],
     joinDate: '2024-01-10',
+    // Currently-active approved leave: this is the worker the admin portal shows as "On leave",
+    // and the one new jobs must skip in favour of other workers.
     leaveRequests: [
-      { id: 'lr3', startDate: '2026-08-31', endDate: '2026-09-02', reason: 'Personal leave', status: 'approved' }
+      { id: 'lr3', startDate: '2026-09-09', endDate: '2026-09-14', reason: 'Personal leave', status: 'approved' }
     ]
   },
   {

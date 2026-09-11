@@ -6,12 +6,12 @@ export const mockUsers = [
     password: 'password123',
     role: 'customer',
     phone: '+91 98765 43210',
-    address: '12, Sector 45, Gurugram, Haryana',
+    address: 'Heritage Institute of Technology, Chowbaga Road, Kolkata',
     language: 'en',
     avatar: null,
     savedAddresses: [
-      { label: 'Home', address: '12, Sector 45, Gurugram, Haryana' },
-      { label: 'Office', address: '5th Floor, Tower B, Cyber Hub, Gurugram' }
+      { label: 'Home', address: 'Heritage Institute of Technology, Chowbaga Road, Kolkata' },
+      { label: 'Office', address: 'Godrej Genesis, Sector V, Salt Lake, Kolkata' }
     ]
   },
   {

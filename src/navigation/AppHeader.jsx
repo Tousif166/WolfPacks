@@ -2,12 +2,12 @@ import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Bell, LogOut } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
-import LanguageSwitcher from '@components/ui/LanguageSwitcher';
+import LanguageToggle from '@components/ui/LanguageToggle';
 import { colors, spacing, fontSizes, fontWeights, fontFamilies, shadows } from '@theme';
 
 /**
  * Shared app header — consolidates the header the three web layouts
- * (CustomerLayout/WorkerLayout/AdminLayout) each duplicated: LanguageSwitcher, a notification
+ * (CustomerLayout/WorkerLayout/AdminLayout) each duplicated: the language toggle, a notification
  * bell with an unread dot, and a logout button.
  *
  * On web this header lived inside each layout shell alongside the sidebar+drawer+tabs (three
@@ -32,7 +32,7 @@ export default function AppHeader({ title, accent = colors.primary600 }) {
         {title}
       </Text>
       <View style={styles.right}>
-        <LanguageSwitcher compact />
+        <LanguageToggle size="sm" showLabel={false} />
         <Pressable style={styles.iconBtn} accessibilityLabel="Notifications">
           <Bell size={20} color={colors.gray600} />
           <View style={styles.dot} />

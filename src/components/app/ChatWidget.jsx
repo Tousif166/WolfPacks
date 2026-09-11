@@ -11,6 +11,7 @@ import { X, Send, Bot, User, Mic } from 'lucide-react-native';
 import { chatWithSahakarAI } from '@services/aiService';
 import { useAuth } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
+import LanguageToggle from '@components/ui/LanguageToggle';
 import useSpeechToText from '@hooks/useSpeechToText';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
 
@@ -39,33 +40,13 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  *    in Phase 10b with @react-native-voice/voice.
  */
 
-const LANGUAGES = [
-  { code: 'en', label: 'English', short: 'EN' },
-  { code: 'hi', label: 'हिन्दी', short: 'HI' },
-  { code: 'bn', label: 'বাংলা', short: 'BN' },
-];
-
-const QUICK_PROMPTS = {
-  customer: [
-    'How do I book a service?',
-    'AC filter kab saaf karein?',
-    'আমার বিল কত হবে?',
-    'Track my booking',
-  ],
-  worker: [
-    'My weekly hour limit?',
-    'Overtime bonus kaise milega?',
-    'আমার বীমা কখন শুরু হবে?',
-    'Apply for emergency leave',
-  ],
-  admin: ['Demand forecast today', 'Understaffed zones', 'Complaint status'],
-};
-
-const WELCOME = {
-  id: 1,
-  role: 'model',
-  text: "नमस्ते! 🙏 Hello! আমি Sahakar AI। আপনার সেবায় আছি! I'm here to help in English, हिन्दी, or বাংলা.",
-  time: new Date(),
+// Quick-prompt keys per role — resolved to the active language via t() at render time. Previously
+// these were hardcoded and each list mixed English, romanised Hindi and Bengali in one row, so a
+// user only ever understood some of the suggestions. Now they all show in the selected language.
+const QUICK_PROMPT_KEYS = {
+  customer: ['ai_prompt_book', 'ai_prompt_clean_ac', 'ai_prompt_bill', 'ai_prompt_track'],
+  worker: ['ai_prompt_hours', 'ai_prompt_overtime', 'ai_prompt_insurance', 'ai_prompt_leave'],
+  admin: ['ai_prompt_demand', 'ai_prompt_zones', 'ai_prompt_complaints'],
 };
 
 function formatTime(d) {
@@ -137,11 +118,15 @@ function RobotMascot({ size = 34 }) {
 
 export default function ChatWidget() {
   const { role } = useAuth();
-  const { language, setLanguage } = useLanguage();
+  const { language, t } = useLanguage();
   const insets = useSafeAreaInsets();
 
   const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState([WELCOME]);
+  // Seed the conversation with the localized welcome. Lazy initializer so t() is read once on
+  // mount; the language toggle inside the widget switches subsequent replies, not this seed.
+  const [messages, setMessages] = useState(() => [
+    { id: 1, role: 'model', text: t('ai_welcome'), time: new Date() },
+  ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [unread, setUnread] = useState(0);
@@ -177,7 +162,7 @@ export default function ChatWidget() {
   const glowOpacity = glow.interpolate({ inputRange: [0, 1], outputRange: [0.25, 0.5] });
   const glowScale = glow.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.12] });
 
-  const activeLang = LANGUAGES.find((l) => l.code === (language || 'en')) || LANGUAGES[0];
+
 
   // Voice input (Phase 10b) — recognized text is appended to the chat input box.
   const stt = useSpeechToText({
@@ -189,8 +174,8 @@ export default function ChatWidget() {
     if (open) {
       setUnread(0);
       // Defer so the new content is laid out before we scroll.
-      const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
-      return () => clearTimeout(t);
+      const timer = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+      return () => clearTimeout(timer);
     }
   }, [open, messages]);
 
@@ -211,7 +196,7 @@ export default function ChatWidget() {
     if (!open) setUnread((u) => u + 1);
   };
 
-  const quickPrompts = QUICK_PROMPTS[role] || QUICK_PROMPTS.customer;
+  const quickPrompts = (QUICK_PROMPT_KEYS[role] || QUICK_PROMPT_KEYS.customer).map((k) => t(k));
 
   return (
     <>
@@ -260,26 +245,13 @@ export default function ChatWidget() {
                     <View style={styles.onlineDot} />
                   </View>
                   <View>
-                    <Text style={styles.headerTitle}>Sahakar AI</Text>
-                    <Text style={styles.headerSub}>Always online • 3 languages</Text>
+                    <Text style={styles.headerTitle}>{t('ai_name')}</Text>
+                    <Text style={styles.headerSub}>{t('ai_status')}</Text>
                   </View>
                 </View>
                 <View style={styles.headerRight}>
-                  <View style={styles.langRow}>
-                    {LANGUAGES.map((lang) => {
-                      const active = activeLang.code === lang.code;
-                      return (
-                        <Pressable
-                          key={lang.code}
-                          style={[styles.langBtn, active && styles.langBtnActive]}
-                          onPress={() => setLanguage(lang.code)}
-                          accessibilityLabel={lang.label}
-                        >
-                          <Text style={[styles.langText, active && styles.langTextActive]}>{lang.short}</Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
+                  {/* Same canonical language control as the rest of the app. */}
+                  <LanguageToggle size="sm" showLabel={false} />
                   <Pressable style={styles.closeBtn} onPress={() => setOpen(false)} hitSlop={8} accessibilityLabel="Close chat">
                     <X size={20} color={colors.white} />
                   </Pressable>
@@ -351,7 +323,7 @@ export default function ChatWidget() {
                 </Pressable>
                 <TextInput
                   style={styles.input}
-                  placeholder={stt.listening ? 'Listening…' : `Type in ${activeLang.label}…`}
+                  placeholder={stt.listening ? t('ai_listening') : t('ai_input_placeholder')}
                   placeholderTextColor={colors.gray400}
                   value={input}
                   onChangeText={setInput}
@@ -456,14 +428,6 @@ const styles = StyleSheet.create({
   headerTitle: { color: colors.white, fontSize: fontSizes.fsBase, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold },
   headerSub: { color: 'rgba(255,255,255,0.85)', fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interRegular },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.space2 },
-  langRow: { flexDirection: 'row', gap: 4 },
-  langBtn: {
-    paddingVertical: 3, paddingHorizontal: 7, borderRadius: radii.radiusSm,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)',
-  },
-  langBtnActive: { backgroundColor: 'rgba(255,255,255,0.25)', borderColor: colors.white },
-  langText: { color: colors.white, fontSize: 10, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, opacity: 0.85 },
-  langTextActive: { opacity: 1 },
   closeBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
 
   messages: { maxHeight: 420 },

@@ -1,12 +1,13 @@
 import { useState } from 'react';
-import { View, Text, Pressable, StyleSheet, TextInput } from 'react-native';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  Clock, MapPin, X, Bell, Navigation, ChevronRight, ChevronDown, Search,
-  Wind, Droplet, Flame, Check, ShieldCheck, ArrowRight, Sparkles, Mic,
+  Clock, MapPin, X, Bell, Navigation, ChevronRight, ChevronDown,
+  Wind, Droplet, Flame, Check, ShieldCheck, ArrowRight, Sparkles,
 } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
-import { mockServices, getServiceById } from '@data/mockServices';
+import { useLanguage } from '@context/LanguageContext';
+import { mockServices, getServiceById, serviceName } from '@data/mockServices';
 import { getBookingsByCustomer } from '@data/mockBookings';
 import { serviceIcon } from '@components/icons';
 import { ScreenContainer, SectionHeader, ServiceCardGrid, GradientBand } from '@components/app';
@@ -39,7 +40,7 @@ const statusVariant = {
 };
 
 // Visual lifecycle used ONLY to position the existing status value on a stepper (invents no state).
-const LIFECYCLE = ['Confirmed', 'On the way', 'Arriving'];
+// Labels resolved via t() inside the component (see LIFECYCLE below).
 const STATUS_STEP = { booked: 0, assigned: 0, 'en-route': 1, 'in-progress': 2, completed: 2 };
 
 const MOCK_REMINDERS = [
@@ -59,14 +60,17 @@ const reminderVisual = (serviceId) => REMINDER_VISUAL[serviceId] || { Icon: Bell
 export default function CustomerDashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const { user, profile } = useAuth();
+  const { t } = useLanguage();
+  const LIFECYCLE = [t('step_confirmed'), t('step_on_the_way'), t('step_arriving')];
   const bookings = getBookingsByCustomer(user?.id);
   const activeBookings = bookings.filter((b) => ['en-route', 'in-progress', 'assigned'].includes(b.status));
   const [reminders, setReminders] = useState(MOCK_REMINDERS);
   const [showHelpline, setShowHelpline] = useState(false);
-  // Frontend-only value for the service search input (visual field; no filtering/backend call).
-  const [serviceQuery, setServiceQuery] = useState('');
 
-  const displayName = profile?.full_name?.split(' ')[0] || user?.name?.split(' ')[0] || 'there';
+  const displayName = profile?.full_name?.split(' ')[0] || user?.name?.split(' ')[0] || t('hi_there');
+  // Time-based greeting, localized (reuses the existing good_morning/afternoon/evening keys).
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? t('good_morning') : hour < 17 ? t('good_afternoon') : t('good_evening');
 
   const dismissReminder = (id) => setReminders((prev) => prev.filter((r) => r.id !== id));
   const daysUntil = (dateStr) => Math.ceil((new Date(dateStr) - new Date()) / (1000 * 60 * 60 * 24));
@@ -88,11 +92,11 @@ export default function CustomerDashboardScreen({ navigation }) {
       >
         <View style={styles.headerTopRow}>
           <View style={styles.greetWrap}>
-            <Text style={styles.greetSmall}>Good morning,</Text>
+            <Text style={styles.greetSmall}>{greeting},</Text>
             <Text style={styles.greetName} numberOfLines={1}>{displayName} 👋</Text>
             <View style={styles.locRow}>
               <MapPin size={13} color={colors.primary100} strokeWidth={2.2} />
-              <Text style={styles.locText} numberOfLines={1}>Gurugram, Haryana</Text>
+              <Text style={styles.locText} numberOfLines={1}>Anandapur, Kolkata</Text>
               <ChevronDown size={13} color={colors.primary100} />
             </View>
           </View>
@@ -102,11 +106,6 @@ export default function CustomerDashboardScreen({ navigation }) {
           </Pressable>
         </View>
 
-        {/* Floating premium search (same behaviour: tap -> booking) */}
-        <Pressable style={styles.searchField} onPress={() => goBook(undefined)} accessibilityRole="search">
-          <Search size={18} color={colors.gray400} />
-          <Text style={styles.searchPlaceholder} numberOfLines={1}>Search plumbing, AC, cleaning…</Text>
-        </Pressable>
       </GradientBand>
 
       <View style={styles.body}>
@@ -114,12 +113,12 @@ export default function CustomerDashboardScreen({ navigation }) {
         <GradientBand colors={['#4f46e5', '#7c3aed']} angle="diagonal" decor style={styles.hero}>
           <View style={styles.heroChip}>
             <ShieldCheck size={12} color={colors.accent300} />
-            <Text style={styles.heroChipText}>Govt-backed Cooperative</Text>
+            <Text style={styles.heroChipText}>{t('govt_backed_coop')}</Text>
           </View>
-          <Text style={styles.heroTitle}>Verified professionals.{'\n'}Fair prices. Always.</Text>
-          <Text style={styles.heroSub}>Every worker is cooperative-verified with transparent GST billing.</Text>
+          <Text style={styles.heroTitle}>{t('hero_verified_title')}</Text>
+          <Text style={styles.heroSub}>{t('hero_verified_sub')}</Text>
           <Pressable style={styles.heroCta} onPress={() => goBook(undefined)}>
-            <Text style={styles.heroCtaText}>Book a service</Text>
+            <Text style={styles.heroCtaText}>{t('book_a_service')}</Text>
             <ArrowRight size={15} color={colors.primary800} strokeWidth={2.4} />
           </Pressable>
         </GradientBand>
@@ -130,16 +129,16 @@ export default function CustomerDashboardScreen({ navigation }) {
             <View style={styles.liveTop}>
               <View style={styles.livePill}>
                 <View style={styles.liveDot} />
-                <Text style={styles.liveText}>LIVE</Text>
+                <Text style={styles.liveText}>{t('live')}</Text>
               </View>
               <Pressable style={styles.trackBtn} onPress={() => goTrack(active.id)}>
                 <Navigation size={13} color={colors.white} strokeWidth={2.4} />
-                <Text style={styles.trackBtnText}>Track</Text>
+                <Text style={styles.trackBtnText}>{t('track')}</Text>
               </Pressable>
             </View>
-            <Text style={styles.liveTitle} numberOfLines={1}>{active.serviceName} Service</Text>
+            <Text style={styles.liveTitle} numberOfLines={1}>{t('service_suffix', { name: serviceName(getServiceById(active.serviceId) || { id: active.serviceId, name: active.serviceName }, t) })}</Text>
             <Text style={styles.liveSub} numberOfLines={1}>
-              {active.workerName ? `${active.workerName} is on the way` : active.status.replace('-', ' ')}
+              {active.workerName ? t('is_on_the_way', { name: active.workerName }) : active.status.replace('-', ' ')}
             </Text>
 
             {activeStep >= 0 ? (
@@ -168,18 +167,18 @@ export default function CustomerDashboardScreen({ navigation }) {
         {reminders.length > 0 && (
           <View style={styles.section}>
             <View style={styles.remindersHead}>
-              <Text style={styles.sectionKicker}>SERVICE REMINDERS</Text>
+              <Text style={styles.sectionKicker}>{t('service_reminders_caps')}</Text>
               <Badge variant="warning" size="sm">{String(reminders.length)}</Badge>
               <View style={{ flex: 1 }} />
             </View>
-            <Text style={styles.remindersSupport}>Stay on top of home care. We'll remind you so you don't have to.</Text>
+            <Text style={styles.remindersSupport}>{t('reminders_support')}</Text>
             <View style={styles.remindersList}>
               {reminders.map((r) => {
                 const days = daysUntil(r.next_due_date);
                 const isOverdue = days <= 0;
                 const isDueSoon = days > 0 && days <= 4;
                 const { Icon, color, tint } = reminderVisual(r.service_id);
-                const statusText = isOverdue ? 'Overdue' : `Due in ${days} day${days !== 1 ? 's' : ''}`;
+                const statusText = isOverdue ? t('overdue') : t('due_in_days', { days, unit: days !== 1 ? t('days') : t('day') });
                 return (
                   <View
                     key={r.id}
@@ -200,11 +199,11 @@ export default function CustomerDashboardScreen({ navigation }) {
                         >
                           {statusText}
                         </Text>
-                        <Text style={styles.reminderFreq} numberOfLines={1}> · Every {r.interval_days} days</Text>
+                        <Text style={styles.reminderFreq} numberOfLines={1}>{t('every_days', { days: r.interval_days })}</Text>
                       </View>
                     </View>
                     <Pressable style={styles.reminderBook} onPress={() => goBook({ service: r.service_id, desc: r.service_name })}>
-                      <Text style={styles.reminderBookText}>Book</Text>
+                      <Text style={styles.reminderBookText}>{t('book')}</Text>
                     </Pressable>
                     <Pressable style={styles.reminderDismiss} onPress={() => dismissReminder(r.id)} hitSlop={8} accessibilityLabel="Dismiss reminder">
                       <X size={16} color={colors.gray300} strokeWidth={2.2} />
@@ -220,24 +219,7 @@ export default function CustomerDashboardScreen({ navigation }) {
         <View style={styles.section}>
           <View style={styles.servicesHead}>
             <Sparkles size={18} color={colors.primary600} strokeWidth={2.2} />
-            <Text style={styles.servicesHeading}>What do you need help with?</Text>
-          </View>
-
-          {/* Search bar — search icon left, mic right. Frontend-only visual field. */}
-          <View style={styles.searchBar}>
-            <Search size={18} color={colors.gray400} strokeWidth={2.2} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search 'AC Service', 'Plumber'..."
-              placeholderTextColor={colors.gray400}
-              value={serviceQuery}
-              onChangeText={setServiceQuery}
-              returnKeyType="search"
-              accessibilityLabel="Search services"
-            />
-            <Pressable hitSlop={8} accessibilityRole="button" accessibilityLabel="Voice search">
-              <Mic size={18} color={colors.primary600} strokeWidth={2.2} />
-            </Pressable>
+            <Text style={styles.servicesHeading}>{t('need_help_with')}</Text>
           </View>
 
           <ServiceCardGrid services={mockServices} onSelect={(s) => goBook({ service: s.id })} />
@@ -245,7 +227,7 @@ export default function CustomerDashboardScreen({ navigation }) {
 
         {/* Recent bookings */}
         <View style={styles.section}>
-          <SectionHeader title="Recent Bookings" actionLabel="See all →" onPressAction={() => navigation.navigate('BookingHistory')} />
+          <SectionHeader title={t('recent_bookings')} actionLabel={t('see_all_arrow')} onPressAction={() => navigation.navigate('BookingHistory')} />
           <View style={styles.bookingsList}>
             {bookings.slice(0, 3).map((b) => {
               const svc = getServiceById(b.serviceId);
@@ -257,7 +239,7 @@ export default function CustomerDashboardScreen({ navigation }) {
                     <Icon size={20} color={accent} strokeWidth={2.2} />
                   </View>
                   <View style={styles.bookingInfo}>
-                    <Text style={styles.bookingName} numberOfLines={1}>{b.serviceName}</Text>
+                    <Text style={styles.bookingName} numberOfLines={1}>{serviceName(svc || { id: b.serviceId, name: b.serviceName }, t)}</Text>
                     <View style={styles.bookingMetaRow}>
                       <Clock size={11} color={colors.gray400} strokeWidth={2} />
                       <Text style={styles.bookingMeta} numberOfLines={1}>{b.date} • {b.time}</Text>
@@ -273,7 +255,7 @@ export default function CustomerDashboardScreen({ navigation }) {
                     {b.status === 'en-route' ? (
                       <Pressable style={styles.miniTrack} onPress={() => goTrack(b.id)}>
                         <Navigation size={11} color={colors.primary600} strokeWidth={2.2} />
-                        <Text style={styles.miniTrackText}>Track</Text>
+                        <Text style={styles.miniTrackText}>{t('track')}</Text>
                       </Pressable>
                     ) : (
                       <ChevronRight size={16} color={colors.gray300} />
@@ -317,14 +299,6 @@ const styles = StyleSheet.create({
     position: 'absolute', top: 10, right: 11, width: 8, height: 8, borderRadius: 4,
     backgroundColor: colors.accent400, borderWidth: 1.5, borderColor: '#5b21b6',
   },
-  searchField: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.space2,
-    backgroundColor: colors.surfaceWhite, borderRadius: radii.radiusFull,
-    paddingHorizontal: spacing.space4, paddingVertical: spacing.space3,
-    marginTop: spacing.space4, ...shadows.shadowLg, shadowColor: '#312e81',
-  },
-  searchPlaceholder: { flex: 1, fontSize: fontSizes.fsSm, color: colors.gray400, fontFamily: fontFamilies.interRegular },
-
   // ---- Body ----
   body: { paddingHorizontal: spacing.space4, paddingTop: spacing.space5 },
   section: { marginTop: spacing.space6 },
@@ -394,27 +368,6 @@ const styles = StyleSheet.create({
   // ---- Services ----
   servicesHead: { flexDirection: 'row', alignItems: 'center', gap: spacing.space2, marginBottom: spacing.space3 },
   servicesHeading: { fontSize: fontSizes.fsXl, fontWeight: fontWeights.fwExtrabold, fontFamily: fontFamilies.interExtraBold, color: colors.gray900 },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.space2,
-    backgroundColor: colors.surfaceWhite,
-    borderRadius: radii.radiusFull,
-    borderWidth: 1,
-    borderColor: colors.gray200,
-    paddingVertical: 10,
-    paddingHorizontal: spacing.space4,
-    marginBottom: spacing.space4,
-    ...shadows.shadowSm,
-  },
-  searchInput: {
-    flex: 1,
-    paddingVertical: 0,
-    fontSize: fontSizes.fsSm,
-    fontFamily: fontFamilies.interRegular,
-    color: colors.gray900,
-  },
-
   // ---- Recent bookings ----
   bookingsList: { gap: spacing.space3 },
   bookingCard: {

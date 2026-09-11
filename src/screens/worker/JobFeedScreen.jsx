@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Modal as RNModalNative,
   View,
@@ -8,6 +8,7 @@ import {
   Easing,
   ScrollView,
   StyleSheet,
+  Alert,
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -32,9 +33,20 @@ import {
   Wallet,
   Check,
   Lightbulb,
+  PowerOff,
+  CalendarOff,
+  GraduationCap,
+  Filter,
   Map as MapIcon,
 } from 'lucide-react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { ScreenContainer, Confetti } from '@components/app';
+import { useLanguage } from '@context/LanguageContext';
+import { useAuth } from '@context/AuthContext';
+import { getPendingBookings, acceptBooking } from '@data/mockBookings';
+import { useWorkerStatus } from '@data/workerStatus';
+import { useWorkerRegistration } from '@data/workerRegistration';
+import { buildWorkerData } from './workerData';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
 
 /**
@@ -59,18 +71,22 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  * button's existing behaviour are all preserved EXACTLY.
  */
 
+// `serviceId` matches the ids in src/data/mockServices.js and is what the category filter keys
+// off — the same field real bookings carry. These now span several categories so the filter is
+// observably doing something: a plumber sees the two plumbing jobs, an electrician only the
+// electrical one. 'Pipe Fitting' is a plumbing sub-skill, hence serviceId 'plumbing'.
 const availableJobs = [
-  { id: 'JOB001', serviceName: 'Plumbing', description: 'Bathroom pipe burst, urgent repair needed', address: 'Sector 22, Gurugram', date: '2026-09-01', time: '11:00 AM', estimatedPay: 450, customerName: 'Amit Singh', customerRating: 4.5, fairnessPosition: 1, urgency: 'high' },
-  { id: 'JOB002', serviceName: 'Plumbing', description: 'Kitchen tap replacement', address: 'DLF Phase 3, Gurugram', date: '2026-09-01', time: '2:00 PM', estimatedPay: 350, customerName: 'Neha Gupta', customerRating: 4.8, fairnessPosition: 2, urgency: 'medium' },
-  { id: 'JOB003', serviceName: 'Pipe Fitting', description: 'New washing machine inlet pipe installation', address: 'Sushant Lok, Gurugram', date: '2026-09-02', time: '10:00 AM', estimatedPay: 500, customerName: 'Raj Patel', customerRating: 4.2, fairnessPosition: 3, urgency: 'low' },
-  { id: 'JOB004', serviceName: 'Plumbing', description: 'Water heater connection repair', address: 'Sector 56, Gurugram', date: '2026-09-02', time: '4:00 PM', estimatedPay: 400, customerName: 'Sita Devi', customerRating: 4.9, fairnessPosition: 4, urgency: 'medium' },
+  { id: 'JOB001', serviceId: 'plumbing', serviceName: 'Plumbing', description: 'Bathroom pipe burst, urgent repair needed', address: 'Anandapur, Kolkata', date: '2026-09-01', time: '11:00 AM', estimatedPay: 450, customerName: 'Amit Singh', customerRating: 4.5, fairnessPosition: 1, urgency: 'high' },
+  { id: 'JOB002', serviceId: 'electrical', serviceName: 'Electrical', description: 'Multiple switches not working in bedroom', address: 'Kasba Golpark, Kolkata', date: '2026-09-01', time: '2:00 PM', estimatedPay: 350, customerName: 'Neha Gupta', customerRating: 4.8, fairnessPosition: 2, urgency: 'medium' },
+  { id: 'JOB003', serviceId: 'plumbing', serviceName: 'Pipe Fitting', description: 'New washing machine inlet pipe installation', address: 'Madurdaha, Kolkata', date: '2026-09-02', time: '10:00 AM', estimatedPay: 500, customerName: 'Raj Patel', customerRating: 4.2, fairnessPosition: 3, urgency: 'low' },
+  { id: 'JOB004', serviceId: 'ac-repair', serviceName: 'AC Repair', description: 'AC not cooling properly, needs servicing', address: 'Chowbaga Road, Kolkata', date: '2026-09-02', time: '4:00 PM', estimatedPay: 400, customerName: 'Sita Devi', customerRating: 4.9, fairnessPosition: 4, urgency: 'medium' },
 ];
 
 // Priority presentation tokens (soft tinted pill + dot). Purely visual metadata, not buttons.
 const PRIORITY = {
-  high: { label: 'High priority', bg: colors.danger50, fg: colors.danger600, dot: colors.danger500 },
-  medium: { label: 'Medium priority', bg: colors.warning50, fg: colors.warning700, dot: colors.warning500 },
-  low: { label: 'Low priority', bg: colors.gray100, fg: colors.gray600, dot: colors.gray400 },
+  high: { labelKey: 'high_priority', bg: colors.danger50, fg: colors.danger600, dot: colors.danger500 },
+  medium: { labelKey: 'medium_priority', bg: colors.warning50, fg: colors.warning700, dot: colors.warning500 },
+  low: { labelKey: 'low_priority', bg: colors.gray100, fg: colors.gray600, dot: colors.gray400 },
 };
 
 // Service → icon + pastel tint. Uses existing lucide-react-native icons only (no new deps).
@@ -82,21 +98,118 @@ const SERVICE_STYLE = {
   Cleaning: { Icon: SprayCan, tint: '#ecfdf5', fg: colors.success600 },
   Carpentry: { Icon: Hammer, tint: '#fef2f2', fg: colors.danger600 },
   'AC Service': { Icon: Wind, tint: '#eff6ff', fg: colors.info600 },
+  // Catalogue name in mockServices is "AC Repair"; without this it fell through to the generic
+  // settings-cog fallback.
+  'AC Repair': { Icon: Wind, tint: '#eff6ff', fg: colors.info600 },
 };
 function serviceStyle(name) {
   return SERVICE_STYLE[name] || { Icon: Settings, tint: colors.gray100, fg: colors.gray600 };
 }
 
+/**
+ * Maps a REAL pending booking (from the customer portal) into the shape this feed renders.
+ * Fields the booking record genuinely has are carried over; those it doesn't (customer rating,
+ * an urgency grading) are left null so the UI omits them rather than inventing a value.
+ */
+const pendingToJob = (b) => ({
+  id: b.id,
+  // Carried through so the feed can filter by the worker's skill categories.
+  serviceId: b.serviceId,
+  serviceName: b.serviceName,
+  description: b.description,
+  address: b.address,
+  date: b.date,
+  time: b.time,
+  estimatedPay: b.totalPrice,
+  customerName: b.customerName,
+  customerRating: null,
+  fairnessPosition: b.fairnessPosition ?? 1,
+  urgency: null,
+  isRealBooking: true,
+});
+
 export default function JobFeedScreen() {
-  const [jobs, setJobs] = useState(availableJobs);
+  const { t } = useLanguage();
+  const { user, profile, workerProfile } = useAuth();
+  // Identity of the worker who will be attached to a booking on accept.
+  // Subscribes to the registration store so finishing training re-renders this screen (and
+  // re-reads buildWorkerData) without needing a navigation bounce.
+  useWorkerRegistration(user?.email);
+
+  const worker = buildWorkerData(user, profile, workerProfile);
+  const workerId = worker.mockWorkerId || user?.id;
+
+  // Shared availability (toggled on the dashboard) + approved-leave state.
+  const { onLeave, canAcceptJobs: statusAllows } = useWorkerStatus(workerId, {
+    fallbackAvailable: worker.available,
+    leaveRequests: worker.leaveRequests,
+  });
+
+  // Third gate, on top of offline and on-leave: a worker who registered for the free offline
+  // training instead of uploading an experience certificate cannot take work until the programme
+  // is finished and their certificate is issued.
+  const trainingBlocked = worker.trainingBlocked;
+  const canAcceptJobs = statusAllows && !trainingBlocked;
+
+  // Real, customer-placed jobs awaiting acceptance + the seeded demo jobs.
+  const [pendingJobs, setPendingJobs] = useState(() => (canAcceptJobs ? getPendingBookings().map(pendingToJob) : []));
+  const [demoJobs, setDemoJobs] = useState(availableJobs);
   const [selectedJob, setSelectedJob] = useState(null);
   const [showAcceptModal, setShowAcceptModal] = useState(false);
   const [accepted, setAccepted] = useState(null);
 
+  // The queue is only ever PULLED while the worker is online and off leave. Going offline freezes
+  // it — whatever was listed stays on screen but every Accept is locked — and coming back online
+  // refreshes it. Because `canAcceptJobs` is a dependency, this also re-runs the moment the
+  // dashboard toggle flips while this tab is open, not just on focus.
+  useFocusEffect(
+    useCallback(() => {
+      if (canAcceptJobs) setPendingJobs(getPendingBookings().map(pendingToJob));
+    }, [canAcceptJobs]),
+  );
+
+  /**
+   * CATEGORY GATE: a worker is only ever shown jobs in the skills they registered for. A job with
+   * no serviceId at all is kept (it cannot be proven to be off-category), and a worker with no
+   * recorded skills sees everything — so this can never silently empty the feed for accounts that
+   * predate the skills dropdown.
+   */
+  const skillIds = worker.skillIds || [];
+  const matchesSkills = (job) => skillIds.length === 0 || !job.serviceId || skillIds.includes(job.serviceId);
+
+  const allJobs = [...pendingJobs, ...demoJobs];
+  const jobs = allJobs.filter(matchesSkills);
+  const hiddenByCategory = allJobs.length - jobs.length;
+
+  // Tapping a locked Accept explains what to do instead of silently doing nothing.
+  const explainLocked = () => {
+    if (trainingBlocked) {
+      Alert.alert(t('training_in_progress_title'), t('training_cannot_accept'));
+      return;
+    }
+    Alert.alert(
+      onLeave ? t('on_leave_jobs_title') : t('offline_jobs_title'),
+      onLeave ? t('on_leave_cannot_accept') : t('go_online_to_accept'),
+    );
+  };
+
   const handleAccept = (job) => {
     setAccepted(job.id);
     setShowAcceptModal(false);
-    setTimeout(() => setJobs((j) => j.filter((x) => x.id !== job.id)), 1500);
+
+    if (job.isRealBooking) {
+      // Attach this worker to the customer's booking and advance it to 'assigned'. That is what
+      // makes the professional appear — and live tracking become available — on the customer side.
+      acceptBooking(job.id, {
+        workerId: worker.mockWorkerId || user?.id,
+        workerName: worker.name,
+        workerRating: worker.rating,
+        workerPhone: worker.phone,
+      });
+      setTimeout(() => setPendingJobs((p) => p.filter((x) => x.id !== job.id)), 1500);
+    } else {
+      setTimeout(() => setDemoJobs((j) => j.filter((x) => x.id !== job.id)), 1500);
+    }
   };
 
   const count = jobs.length;
@@ -106,35 +219,69 @@ export default function JobFeedScreen() {
       {/* ---- Page header (dynamic count, not hardcoded) ---- */}
       <View style={styles.headerRow}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.h1}>Available Jobs</Text>
+          <Text style={styles.h1}>{t('available_jobs')}</Text>
           <Text style={styles.sub}>
-            {count} {count === 1 ? 'job' : 'jobs'} available near you
+            {t('jobs_near_you', { count, unit: count === 1 ? t('job') : t('jobs_lc') })}
           </Text>
         </View>
         {/* Fairness trust panel — presentation of the existing fairness-queue concept. */}
         <View style={styles.trustPanel}>
           <Scale size={16} color={colors.success700} strokeWidth={2.2} />
           <View style={styles.trustTextWrap}>
-            <Text style={styles.trustTitle}>Fair &amp; Transparent</Text>
-            <Text style={styles.trustSub}>Assigned in a fairness queue</Text>
+            <Text style={styles.trustTitle}>{t('fair_transparent')}</Text>
+            <Text style={styles.trustSub}>{t('fairness_queue_sub')}</Text>
           </View>
         </View>
       </View>
+
+      {/* ---- Lock banner: explains why accepting is unavailable. Training outranks offline /
+              on-leave because it is the blocker the worker must clear first. ---- */}
+      {!canAcceptJobs && (
+        <View style={[styles.lockBanner, (onLeave || trainingBlocked) && styles.lockBannerLeave]}>
+          <View style={[styles.lockIcon, (onLeave || trainingBlocked) && styles.lockIconLeave]}>
+            {trainingBlocked ? (
+              <GraduationCap size={17} color={colors.warning700} strokeWidth={2.3} />
+            ) : onLeave ? (
+              <CalendarOff size={17} color={colors.warning700} strokeWidth={2.3} />
+            ) : (
+              <PowerOff size={17} color={colors.gray600} strokeWidth={2.3} />
+            )}
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.lockTitle, (onLeave || trainingBlocked) && styles.lockTitleLeave]}>
+              {trainingBlocked ? t('training_in_progress_title') : onLeave ? t('on_leave_jobs_title') : t('offline_jobs_title')}
+            </Text>
+            <Text style={styles.lockDesc}>
+              {trainingBlocked ? t('training_jobs_desc') : onLeave ? t('on_leave_jobs_desc') : t('offline_jobs_desc')}
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {/* ---- Category note: makes the filter visible instead of jobs just silently missing ---- */}
+      {skillIds.length > 0 && hiddenByCategory > 0 && (
+        <View style={styles.skillNote}>
+          <Filter size={13} color={colors.primary600} strokeWidth={2.3} />
+          <Text style={styles.skillNoteText} numberOfLines={2}>
+            {t('skill_filter_note', { skills: (worker.skills || []).join(', '), count: hiddenByCategory })}
+          </Text>
+        </View>
+      )}
 
       {/* ---- Sort / filter pills ---- */}
       <View style={styles.pillRow}>
         {/* Reflects the real, existing behaviour: the list is fairness-ordered. */}
         <View style={[styles.pill, styles.pillActive]}>
-          <Text style={[styles.pillText, styles.pillTextActive]}>Fairness queue</Text>
+          <Text style={[styles.pillText, styles.pillTextActive]}>{t('fairness_queue')}</Text>
           <ChevronDown size={14} color={colors.success700} strokeWidth={2.4} />
         </View>
         {/* Distance / Earnings sorting do NOT exist in the app — shown disabled, wire to nothing. */}
         <View style={[styles.pill, styles.pillDisabled]}>
-          <Text style={styles.pillTextDisabled}>Distance</Text>
+          <Text style={styles.pillTextDisabled}>{t('distance')}</Text>
           <ChevronDown size={14} color={colors.gray300} strokeWidth={2.4} />
         </View>
         <View style={[styles.pill, styles.pillDisabled]}>
-          <Text style={styles.pillTextDisabled}>Earnings</Text>
+          <Text style={styles.pillTextDisabled}>{t('earnings')}</Text>
           <ChevronDown size={14} color={colors.gray300} strokeWidth={2.4} />
         </View>
       </View>
@@ -158,13 +305,16 @@ export default function JobFeedScreen() {
                   {/* Fairness queue badge — existing position value, unchanged. */}
                   <View style={styles.fairnessBadge}>
                     <Scale size={12} color={colors.success700} strokeWidth={2.2} />
-                    <Text style={styles.fairnessText}>#{job.fairnessPosition} in fair queue</Text>
+                    <Text style={styles.fairnessText}>{t('in_fair_queue', { pos: job.fairnessPosition })}</Text>
                   </View>
                 </View>
-                <View style={[styles.priorityBadge, { backgroundColor: pr.bg }]}>
-                  <View style={[styles.priorityDot, { backgroundColor: pr.dot }]} />
-                  <Text style={[styles.priorityText, { color: pr.fg }]}>{pr.label}</Text>
-                </View>
+                {/* Real bookings carry no urgency grading — omit the badge rather than invent one. */}
+                {job.urgency ? (
+                  <View style={[styles.priorityBadge, { backgroundColor: pr.bg }]}>
+                    <View style={[styles.priorityDot, { backgroundColor: pr.dot }]} />
+                    <Text style={[styles.priorityText, { color: pr.fg }]}>{t(pr.labelKey)}</Text>
+                  </View>
+                ) : null}
               </View>
 
               <Text style={styles.desc}>{job.description}</Text>
@@ -200,21 +350,32 @@ export default function JobFeedScreen() {
                     <IndianRupee size={18} color={colors.success700} strokeWidth={2.4} />
                     <Text style={styles.pay}>{job.estimatedPay}</Text>
                   </View>
-                  <Text style={styles.payLabel}>Estimated earning</Text>
+                  <Text style={styles.payLabel}>{t('estimated_earning')}</Text>
                 </View>
                 <View style={styles.actions}>
                   {/* Decline — preserved exactly as before (no onPress existed). */}
                   <Pressable style={styles.declineBtn}>
                     <XCircle size={16} color={colors.gray500} strokeWidth={2.2} />
-                    <Text style={styles.declineText}>Decline</Text>
+                    <Text style={styles.declineText}>{t('decline')}</Text>
                   </Pressable>
-                  {/* Accept — opens the same confirm modal (unchanged handler). */}
+                  {/* Accept — green and live when online; grey and locked when offline / on leave,
+                      in which case tapping explains how to unlock it instead of doing nothing. */}
                   <Pressable
-                    style={styles.acceptBtn}
-                    onPress={() => { setSelectedJob(job); setShowAcceptModal(true); }}
+                    style={[styles.acceptBtn, !canAcceptJobs && styles.acceptBtnLocked]}
+                    onPress={() => {
+                      if (!canAcceptJobs) {
+                        explainLocked();
+                        return;
+                      }
+                      setSelectedJob(job);
+                      setShowAcceptModal(true);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: !canAcceptJobs }}
+                    accessibilityLabel={t('accept_job')}
                   >
-                    <CheckCircle size={16} color={colors.white} strokeWidth={2.4} />
-                    <Text style={styles.acceptText}>Accept Job</Text>
+                    <CheckCircle size={16} color={canAcceptJobs ? colors.white : colors.gray500} strokeWidth={2.4} />
+                    <Text style={[styles.acceptText, !canAcceptJobs && styles.acceptTextLocked]}>{t('accept_job')}</Text>
                   </Pressable>
                 </View>
               </View>
@@ -222,7 +383,7 @@ export default function JobFeedScreen() {
               {accepted === job.id && (
                 <View style={styles.acceptedOverlay}>
                   <CheckCircle size={34} color={colors.white} strokeWidth={2.2} />
-                  <Text style={styles.acceptedText}>Job Accepted!</Text>
+                  <Text style={styles.acceptedText}>{t('job_accepted')}</Text>
                 </View>
               )}
             </View>
@@ -254,6 +415,7 @@ export default function JobFeedScreen() {
  */
 function AcceptJobSheet({ job, isOpen, onClose, onConfirm }) {
   const insets = useSafeAreaInsets();
+  const { t } = useLanguage();
   const { height } = useWindowDimensions();
 
   const translateY = useRef(new Animated.Value(height)).current;
@@ -308,16 +470,16 @@ function AcceptJobSheet({ job, isOpen, onClose, onConfirm }) {
             <Animated.View style={[styles.successIcon, { transform: [{ scale: checkScale }] }]}>
               <Check size={44} color={colors.white} strokeWidth={3.5} />
             </Animated.View>
-            <Text style={styles.successTitle}>Job Accepted!</Text>
-            <Text style={styles.successSub}>You're all set. We'll add it to your schedule.</Text>
+            <Text style={styles.successTitle}>{t('job_accepted')}</Text>
+            <Text style={styles.successSub}>{t('all_set')}</Text>
           </View>
         ) : (
           <>
             {/* Header */}
             <View style={styles.sheetHeader}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.sheetTitle}>Accept Job?</Text>
-                <Text style={styles.sheetSub}>Review the details and confirm to accept this job</Text>
+                <Text style={styles.sheetTitle}>{t('accept_job_q')}</Text>
+                <Text style={styles.sheetSub}>{t('accept_job_review')}</Text>
               </View>
               <Pressable style={styles.sheetClose} onPress={onClose} accessibilityLabel="Close" hitSlop={8}>
                 <X size={20} color={colors.gray600} strokeWidth={2.2} />
@@ -336,7 +498,7 @@ function AcceptJobSheet({ job, isOpen, onClose, onConfirm }) {
                     {isUrgent && (
                       <View style={[styles.urgentBadge, { backgroundColor: pr.bg }]}>
                         <View style={[styles.urgentDot, { backgroundColor: pr.dot }]} />
-                        <Text style={[styles.urgentText, { color: pr.fg }]}>Urgent</Text>
+                        <Text style={[styles.urgentText, { color: pr.fg }]}>{t('urgent')}</Text>
                       </View>
                     )}
                   </View>
@@ -351,7 +513,7 @@ function AcceptJobSheet({ job, isOpen, onClose, onConfirm }) {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.custName} numberOfLines={1}>{job.customerName}</Text>
-                  <Text style={styles.custLabel}>Customer</Text>
+                  <Text style={styles.custLabel}>{t('customer_label')}</Text>
                 </View>
                 {job.customerRating != null && (
                   <View style={styles.custRating}>
@@ -371,7 +533,7 @@ function AcceptJobSheet({ job, isOpen, onClose, onConfirm }) {
                     <IndianRupee size={22} color={colors.success800} strokeWidth={2.6} />
                     <Text style={styles.earnAmount}>{job.estimatedPay}</Text>
                   </View>
-                  <Text style={styles.earnLabel}>Estimated earnings</Text>
+                  <Text style={styles.earnLabel}>{t('estimated_earnings')}</Text>
                 </View>
               </View>
 
@@ -380,14 +542,14 @@ function AcceptJobSheet({ job, isOpen, onClose, onConfirm }) {
                 <View style={styles.infoCard}>
                   <View style={styles.infoHead}>
                     <MapPin size={15} color={colors.info600} strokeWidth={2.2} />
-                    <Text style={styles.infoHeadText}>Location</Text>
+                    <Text style={styles.infoHeadText}>{t('location')}</Text>
                   </View>
                   <Text style={styles.infoValue} numberOfLines={3}>{job.address}</Text>
                 </View>
                 <View style={styles.infoCard}>
                   <View style={styles.infoHead}>
                     <Clock size={15} color={colors.primary600} strokeWidth={2.2} />
-                    <Text style={styles.infoHeadText}>Scheduled time</Text>
+                    <Text style={styles.infoHeadText}>{t('scheduled_time')}</Text>
                   </View>
                   <Text style={styles.infoValue}>{job.date}</Text>
                   <Text style={styles.infoValueSub}>{job.time}</Text>
@@ -411,35 +573,33 @@ function AcceptJobSheet({ job, isOpen, onClose, onConfirm }) {
               <View style={styles.fairnessCard}>
                 <View style={styles.fairnessHead}>
                   <Scale size={17} color={colors.success700} strokeWidth={2.2} />
-                  <Text style={styles.fairnessTitle}>Fairness Queue</Text>
+                  <Text style={styles.fairnessTitle}>{t('fairness_queue_title')}</Text>
                   <View style={styles.fairnessPos}>
-                    <Text style={styles.fairnessPosText}>#{job.fairnessPosition} in queue</Text>
+                    <Text style={styles.fairnessPosText}>{t('in_queue', { pos: job.fairnessPosition })}</Text>
                   </View>
                 </View>
-                <Text style={styles.fairnessDesc}>
-                  You're currently #{job.fairnessPosition} in the fairness queue. Jobs are offered in queue order.
-                </Text>
+                <Text style={styles.fairnessDesc}>{t('fairness_desc', { pos: job.fairnessPosition })}</Text>
               </View>
 
               {/* Why you received this job (only derivable reasons) */}
               <View style={styles.whyCard}>
                 <View style={styles.whyHead}>
                   <Lightbulb size={16} color={colors.accent600} strokeWidth={2.2} />
-                  <Text style={styles.whyTitle}>Why you received this job?</Text>
+                  <Text style={styles.whyTitle}>{t('why_received')}</Text>
                 </View>
-                <WhyItem text={`You're #${job.fairnessPosition} in the fairness queue`} />
-                <WhyItem text={`Matches your ${job.serviceName} skill`} last />
+                <WhyItem text={t('why_fairness', { pos: job.fairnessPosition })} />
+                <WhyItem text={t('why_skill', { service: job.serviceName })} last />
               </View>
             </ScrollView>
 
             {/* Actions */}
             <View style={styles.sheetActions}>
-              <Pressable style={styles.notNowBtn} onPress={onClose} accessibilityLabel="Not now">
-                <Text style={styles.notNowText}>Not Now</Text>
+              <Pressable style={styles.notNowBtn} onPress={onClose} accessibilityLabel={t('not_now')}>
+                <Text style={styles.notNowText}>{t('not_now')}</Text>
               </Pressable>
-              <PressableScale style={styles.acceptForBtn} onPress={handleConfirm} accessibilityLabel={`Accept for ₹${job.estimatedPay}`}>
+              <PressableScale style={styles.acceptForBtn} onPress={handleConfirm} accessibilityLabel={t('accept_for', { amount: job.estimatedPay })}>
                 <Check size={18} color={colors.white} strokeWidth={2.6} />
-                <Text style={styles.acceptForText}>Accept for ₹{job.estimatedPay}</Text>
+                <Text style={styles.acceptForText}>{t('accept_for', { amount: job.estimatedPay })}</Text>
               </PressableScale>
             </View>
           </>
@@ -507,6 +667,33 @@ const styles = StyleSheet.create({
   trustTextWrap: { flexShrink: 1 },
   trustTitle: { fontSize: 11.5, fontFamily: fontFamilies.interBold, fontWeight: fontWeights.fwBold, color: colors.success800 },
   trustSub: { fontSize: 10, fontFamily: fontFamilies.interRegular, color: colors.success700, marginTop: 1 },
+
+  // ---- Offline / on-leave lock banner ----
+  lockBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.space3,
+    padding: spacing.space4, marginBottom: spacing.space4,
+    backgroundColor: colors.gray50, borderWidth: 1, borderColor: colors.gray200,
+    borderRadius: radii.radiusLg,
+  },
+  lockBannerLeave: { backgroundColor: colors.warning50, borderColor: colors.warning200 },
+  lockIcon: {
+    width: 34, height: 34, borderRadius: radii.radiusFull, backgroundColor: colors.gray200,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  lockIconLeave: { backgroundColor: colors.warning100 },
+  lockTitle: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.gray900 },
+  lockTitleLeave: { color: colors.warning800 },
+  lockDesc: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interRegular, marginTop: 2, lineHeight: 16 },
+
+  // ---- Skill-category filter note ----
+  skillNote: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.space2,
+    paddingVertical: spacing.space2, paddingHorizontal: spacing.space3,
+    marginBottom: spacing.space3,
+    backgroundColor: colors.primary50, borderWidth: 1, borderColor: colors.primary100,
+    borderRadius: radii.radiusMd,
+  },
+  skillNoteText: { flex: 1, fontSize: fontSizes.fsXs, color: colors.primary700, fontFamily: fontFamilies.interMedium, lineHeight: 15 },
 
   // ---- Sort / filter pills ----
   pillRow: { flexDirection: 'row', gap: spacing.space2, marginBottom: spacing.space4, flexWrap: 'wrap' },
@@ -627,6 +814,9 @@ const styles = StyleSheet.create({
     ...shadows.shadowSm,
   },
   acceptText: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.white },
+  // Locked (offline / on leave): grey instead of green, and visibly inert.
+  acceptBtnLocked: { backgroundColor: colors.gray200, shadowOpacity: 0, elevation: 0 },
+  acceptTextLocked: { color: colors.gray500 },
 
   acceptedOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.success600, alignItems: 'center', justifyContent: 'center', gap: spacing.space2 },
   acceptedText: { fontSize: fontSizes.fsXl, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.white },

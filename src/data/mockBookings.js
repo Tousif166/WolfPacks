@@ -22,6 +22,30 @@ import { getJSON, setJSON } from '@storage/mmkv';
 
 const STORAGE_KEY = 'sahakar_bookings';
 
+// The demo's service location. Single source of truth: used by the seed bookings below, as the
+// fallback in addBooking, and as the migration target — so it can never drift out of sync again.
+export const DEFAULT_ADDRESS = 'Heritage Institute of Technology, Chowbaga Road, Kolkata';
+
+/**
+ * Addresses from before the demo moved to Kolkata.
+ *
+ * WHY A MIGRATION IS NEEDED: loadStoredBookings() returns the persisted array whenever one
+ * exists, which short-circuits INITIAL_BOOKINGS entirely. On any device that had already created
+ * or stored a booking, editing the seed has NO effect — the old Gurugram address survives in MMKV
+ * and keeps showing up (e.g. on the live-tracking sheet, which reads booking.address). So stale
+ * addresses are rewritten once, on hydration, and persisted back.
+ */
+const LEGACY_ADDRESSES = [
+  '12, Sector 45, Gurugram, Haryana',
+  'Green Valley Apts, Sector 14',
+];
+
+/** True for a demo address that predates the Kolkata move. Custom user input is left untouched. */
+function isLegacyAddress(addr) {
+  if (typeof addr !== 'string') return false;
+  return LEGACY_ADDRESSES.includes(addr.trim()) || /gurugram|haryana/i.test(addr);
+}
+
 // Initial seed bookings
 const INITIAL_BOOKINGS = [
   {
@@ -35,7 +59,7 @@ const INITIAL_BOOKINGS = [
     serviceId: 'plumbing',
     serviceName: 'Plumbing',
     description: 'Kitchen sink pipe is leaking badly, water dripping continuously',
-    address: '12, Sector 45, Gurugram, Haryana',
+    address: DEFAULT_ADDRESS,
     date: '2026-09-01',
     time: '10:00 AM',
     status: 'en-route',
@@ -59,7 +83,7 @@ const INITIAL_BOOKINGS = [
     serviceId: 'electrical',
     serviceName: 'Electrical',
     description: 'Multiple switches not working in bedroom',
-    address: '12, Sector 45, Gurugram, Haryana',
+    address: DEFAULT_ADDRESS,
     date: '2026-08-28',
     time: '2:00 PM',
     status: 'completed',
@@ -83,7 +107,7 @@ const INITIAL_BOOKINGS = [
     serviceId: 'cleaning',
     serviceName: 'Cleaning',
     description: 'Full house deep cleaning needed before festival',
-    address: '12, Sector 45, Gurugram, Haryana',
+    address: DEFAULT_ADDRESS,
     date: '2026-08-25',
     time: '9:00 AM',
     status: 'completed',
@@ -131,7 +155,7 @@ const INITIAL_BOOKINGS = [
     serviceId: 'pest-control',
     serviceName: 'Pest Control',
     description: 'Cockroach problem in kitchen, need full treatment',
-    address: '12, Sector 45, Gurugram, Haryana',
+    address: DEFAULT_ADDRESS,
     date: '2026-09-03',
     time: '10:00 AM',
     status: 'cancelled',
@@ -150,7 +174,25 @@ const INITIAL_BOOKINGS = [
 function loadStoredBookings() {
   try {
     const parsed = getJSON(STORAGE_KEY);
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      // Rewrite any pre-Kolkata demo address, then write back so this only ever runs once.
+      let changed = false;
+      const migrated = parsed.map((b) => {
+        if (b && isLegacyAddress(b.address)) {
+          changed = true;
+          return { ...b, address: DEFAULT_ADDRESS };
+        }
+        return b;
+      });
+      if (changed) {
+        try {
+          setJSON(STORAGE_KEY, migrated);
+        } catch (e) {
+          console.error('Error persisting migrated booking addresses:', e);
+        }
+      }
+      return migrated;
+    }
   } catch (e) {
     console.error('Error loading stored bookings:', e);
   }
@@ -173,17 +215,24 @@ export function addBooking(bookingData) {
     id: newId,
     customerId,
     customerName: bookingData.customerName || 'Customer',
-    workerId: bookingData.workerId || 'w1',
-    workerName: bookingData.workerName || 'Suresh Kumar',
-    workerRating: bookingData.workerRating || 4.8,
-    workerPhone: bookingData.workerPhone || '+91 76543 21098',
+    // A brand-new booking is UNASSIGNED. Worker fields stay null until a worker accepts the job
+    // in the worker portal (see acceptBooking below). Previously these defaulted to the demo
+    // worker 'Suresh Kumar', which made a professional appear on the customer's confirmation
+    // screen before anyone had actually taken the job.
+    workerId: bookingData.workerId ?? null,
+    workerName: bookingData.workerName ?? null,
+    workerRating: bookingData.workerRating ?? null,
+    workerPhone: bookingData.workerPhone ?? null,
     serviceId: bookingData.serviceId || 'plumbing',
     serviceName: bookingData.serviceName || 'Home Service',
     description: bookingData.description || 'Standard service request',
-    address: bookingData.address || '12, Sector 45, Gurugram, Haryana',
+    address: bookingData.address || DEFAULT_ADDRESS,
     date: bookingData.date || new Date().toISOString().split('T')[0],
     time: bookingData.time || '10:00 AM',
-    status: bookingData.status || 'en-route',
+    // 'booked' = placed, awaiting a worker to accept. It is the first step of the existing
+    // statusOrder in StatusTimeline (booked -> assigned -> en-route -> in-progress -> completed),
+    // so no new status value is introduced.
+    status: bookingData.status || 'booked',
     basePrice: bookingData.basePrice || 299,
     weatherMultiplier: bookingData.weatherMultiplier || 1.0,
     weatherCondition: bookingData.weatherCondition || 'Clear',
@@ -243,6 +292,46 @@ export const getBookingsByCustomer = (customerId) => {
 
 export const getBookingsByWorker = (workerId) =>
   mockBookings.filter(b => b.workerId === workerId);
+
+/** Look a booking up by id (live record, not a snapshot). */
+export const getBookingById = (bookingId) =>
+  mockBookings.find(b => b.id === bookingId);
+
+/**
+ * Bookings that are placed but not yet taken by anyone — the worker portal's job feed.
+ * A booking qualifies while it is still 'booked' AND has no worker attached.
+ */
+export const getPendingBookings = () =>
+  mockBookings.filter(b => b.status === 'booked' && !b.workerId);
+
+/**
+ * A worker accepts a pending job.
+ *
+ * This is the single point where a booking gains a professional. It attaches the accepting
+ * worker's identity and advances the status 'booked' -> 'assigned', which is what unlocks live
+ * tracking on the customer side (getActiveBooking / ACTIVE_STATUSES include 'assigned').
+ *
+ * Returns the updated booking, or null when the id is unknown or the job was already taken
+ * (so the caller can tell the worker someone else got there first).
+ */
+export function acceptBooking(bookingId, worker = {}) {
+  const booking = mockBookings.find(b => b.id === bookingId);
+  if (!booking || booking.workerId) return null;
+
+  booking.workerId = worker.workerId ?? worker.id ?? null;
+  booking.workerName = worker.workerName ?? worker.name ?? null;
+  booking.workerRating = worker.workerRating ?? worker.rating ?? null;
+  booking.workerPhone = worker.workerPhone ?? worker.phone ?? null;
+  booking.status = 'assigned';
+  booking.acceptedAt = new Date().toISOString();
+
+  try {
+    setJSON(STORAGE_KEY, mockBookings);
+  } catch (e) {
+    console.error('Error saving accepted booking to storage:', e);
+  }
+  return booking;
+}
 
 export const getActiveBooking = (customerId) => {
   const id = resolveCustomerId(customerId);

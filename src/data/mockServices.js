@@ -119,3 +119,20 @@ export const weatherConditions = [
 ];
 
 export const currentWeather = { condition: 'Rainy', multiplier: 1.3, icon: '🌧️' };
+
+/**
+ * Localized service name/description resolvers.
+ *
+ * The service data keeps its canonical English `name`/`description` (used by receipts, AI
+ * prompts, booking records — anything that should stay stable regardless of UI language). For
+ * DISPLAY, pass the language context's `t` so the grid/booking UI shows the service in the
+ * selected language. Keys follow `svc_<id>` / `svc_<id>_desc` in translations.js; a missing
+ * translation falls back to English automatically via t().
+ *
+ * Usage:  const { t } = useLanguage();  <Text>{serviceName(service, t)}</Text>
+ */
+export const serviceName = (service, t) =>
+  (t ? t(`svc_${service.id}`) : null) || service.name;
+
+export const serviceDescription = (service, t) =>
+  (t ? t(`svc_${service.id}_desc`) : null) || service.description;

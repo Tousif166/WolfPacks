@@ -12,6 +12,7 @@ import {
   ListFilter,
 } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
+import { useLanguage } from '@context/LanguageContext';
 import { ScreenContainer } from '@components/app';
 import Modal from '@components/ui/Modal';
 import { DEMO_WORKER_ID, demoMockWorker } from './workerData';
@@ -37,21 +38,22 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  *  { id, startDate, endDate, reason, status }.
  */
 
-// [pill bg, pill fg, accent bar, tile bg, tile fg, icon]
+// [pill bg, pill fg, accent bar, tile bg, tile fg, icon]. `labelKey` is resolved via t() at
+// render so status labels are localized.
 const STATUS_STYLE = {
-  approved: { bg: colors.success50, fg: colors.success700, accent: colors.success500, tileBg: colors.success50, tileFg: colors.success600, Icon: Check, label: 'Approved' },
-  pending: { bg: colors.warning50, fg: colors.warning700, accent: colors.warning500, tileBg: colors.warning50, tileFg: colors.warning600, Icon: Clock, label: 'Pending' },
-  rejected: { bg: colors.danger50, fg: colors.danger600, accent: colors.danger500, tileBg: colors.danger50, tileFg: colors.danger600, Icon: X, label: 'Rejected' },
+  approved: { bg: colors.success50, fg: colors.success700, accent: colors.success500, tileBg: colors.success50, tileFg: colors.success600, Icon: Check, labelKey: 'approved' },
+  pending: { bg: colors.warning50, fg: colors.warning700, accent: colors.warning500, tileBg: colors.warning50, tileFg: colors.warning600, Icon: Clock, labelKey: 'pending' },
+  rejected: { bg: colors.danger50, fg: colors.danger600, accent: colors.danger500, tileBg: colors.danger50, tileFg: colors.danger600, Icon: X, labelKey: 'rejected' },
 };
 function statusStyle(status) {
-  return STATUS_STYLE[status] || { bg: colors.gray100, fg: colors.gray600, accent: colors.gray300, tileBg: colors.gray100, tileFg: colors.gray500, Icon: Calendar, label: status || '—' };
+  return STATUS_STYLE[status] || { bg: colors.gray100, fg: colors.gray600, accent: colors.gray300, tileBg: colors.gray100, tileFg: colors.gray500, Icon: Calendar, labelKey: null, fallback: status || '—' };
 }
 
 const FILTERS = [
-  { key: 'all', label: 'All', Icon: ListFilter },
-  { key: 'pending', label: 'Pending', Icon: Clock },
-  { key: 'approved', label: 'Approved', Icon: Check },
-  { key: 'rejected', label: 'Rejected', Icon: X },
+  { key: 'all', labelKey: 'all', Icon: ListFilter },
+  { key: 'pending', labelKey: 'pending', Icon: Clock },
+  { key: 'approved', labelKey: 'approved', Icon: Check },
+  { key: 'rejected', labelKey: 'rejected', Icon: X },
 ];
 
 // Inclusive day count derived from the existing YYYY-MM-DD strings. Frontend-only formatting of
@@ -67,6 +69,7 @@ function dayCount(startDate, endDate) {
 
 export default function LeaveRequestsScreen() {
   const { user } = useAuth();
+  const { t } = useLanguage();
   const seedLeaves = user?.id === DEMO_WORKER_ID ? demoMockWorker.leaveRequests || [] : [];
 
   const [showModal, setShowModal] = useState(false);
@@ -100,20 +103,21 @@ export default function LeaveRequestsScreen() {
       {/* ---- Header ---- */}
       <View style={styles.headRow}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.h1}>Leave Requests</Text>
-          <Text style={styles.h1Sub}>View and manage your leave requests</Text>
+          <Text style={styles.h1}>{t('leave_requests')}</Text>
+          <Text style={styles.h1Sub}>{t('leave_requests_sub')}</Text>
         </View>
-        <PressableScale style={styles.newBtn} onPress={() => setShowModal(true)} accessibilityLabel="Request Leave">
+        <PressableScale style={styles.newBtn} onPress={() => setShowModal(true)} accessibilityLabel={t('request_leave')}>
           <Plus size={16} color={colors.white} strokeWidth={2.6} />
-          <Text style={styles.newBtnText}>Request Leave</Text>
+          <Text style={styles.newBtnText}>{t('request_leave')}</Text>
         </PressableScale>
       </View>
 
       {/* ---- Filter chips ---- */}
       <View style={styles.filterRow}>
-        {FILTERS.map(({ key, label, Icon }) => {
+        {FILTERS.map(({ key, labelKey, Icon }) => {
           const active = filter === key;
           const n = counts[key];
+          const label = t(labelKey);
           return (
             <Pressable
               key={key}
@@ -142,12 +146,10 @@ export default function LeaveRequestsScreen() {
               <CalendarDays size={28} color={colors.accent500} strokeWidth={1.9} />
             </View>
             <Text style={styles.emptyTitle}>
-              {leaves.length === 0 ? 'No leave requests yet' : `No ${filter} requests`}
+              {leaves.length === 0 ? t('no_leave_yet') : t('no_filtered_requests', { filter: t(filter) })}
             </Text>
             <Text style={styles.emptyText}>
-              {leaves.length === 0
-                ? 'Tap “Request Leave” to submit your first request.'
-                : 'Try a different filter to see your other requests.'}
+              {leaves.length === 0 ? t('tap_request_leave') : t('try_different_filter')}
             </Text>
           </View>
         ) : (
@@ -169,12 +171,12 @@ export default function LeaveRequestsScreen() {
                         {leave.startDate} <Text style={styles.dateArrow}>→</Text> {leave.endDate}
                       </Text>
                       {days != null && (
-                        <Text style={styles.metaText}>{days} {days === 1 ? 'day' : 'days'}</Text>
+                        <Text style={styles.metaText}>{days} {days === 1 ? t('day') : t('days')}</Text>
                       )}
                     </View>
                     <View style={[styles.statusPill, { backgroundColor: s.bg }]}>
                       <s.Icon size={12} color={s.fg} strokeWidth={2.6} />
-                      <Text style={[styles.statusText, { color: s.fg }]}>{s.label}</Text>
+                      <Text style={[styles.statusText, { color: s.fg }]}>{s.labelKey ? t(s.labelKey) : s.fallback}</Text>
                     </View>
                   </View>
 
@@ -184,10 +186,10 @@ export default function LeaveRequestsScreen() {
                   {/* Expanded details (existing fields only — no invented data) */}
                   {expanded && (
                     <View style={styles.detailBox}>
-                      <DetailLine label="From" value={leave.startDate} />
-                      <DetailLine label="To" value={leave.endDate} />
-                      {days != null && <DetailLine label="Duration" value={`${days} ${days === 1 ? 'day' : 'days'}`} />}
-                      <DetailLine label="Status" value={s.label} last />
+                      <DetailLine label={t('from')} value={leave.startDate} />
+                      <DetailLine label={t('to')} value={leave.endDate} />
+                      {days != null && <DetailLine label={t('duration')} value={`${days} ${days === 1 ? t('day') : t('days')}`} />}
+                      <DetailLine label={t('status')} value={s.labelKey ? t(s.labelKey) : s.fallback} last />
                     </View>
                   )}
 
@@ -196,9 +198,9 @@ export default function LeaveRequestsScreen() {
                     style={styles.detailToggle}
                     onPress={() => setExpandedId(expanded ? null : leave.id)}
                     accessibilityRole="button"
-                    accessibilityLabel={expanded ? 'Hide details' : 'View details'}
+                    accessibilityLabel={expanded ? t('hide_details') : t('view_details')}
                   >
-                    <Text style={styles.detailToggleText}>{expanded ? 'Hide Details' : 'View Details'}</Text>
+                    <Text style={styles.detailToggleText}>{expanded ? t('hide_details') : t('view_details')}</Text>
                     {expanded ? (
                       <ChevronDown size={16} color={colors.accent600} strokeWidth={2.4} />
                     ) : (
@@ -222,20 +224,18 @@ export default function LeaveRequestsScreen() {
               <CalendarDays size={34} color={colors.accent600} strokeWidth={1.8} />
             </View>
           </View>
-          <Text style={styles.decorTitle}>Plan your time, live your best life</Text>
-          <Text style={styles.decorText}>
-            Submit your leave requests and keep track of your time off, all in one place.
-          </Text>
+          <Text style={styles.decorTitle}>{t('plan_time_title')}</Text>
+          <Text style={styles.decorText}>{t('plan_time_desc')}</Text>
         </View>
       )}
 
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Request Leave">
+      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={t('request_leave')}>
         <View style={{ gap: spacing.space4 }}>
-          <Field label="Start Date" value={form.startDate} onChangeText={(v) => setForm((p) => ({ ...p, startDate: v }))} placeholder="YYYY-MM-DD" />
-          <Field label="End Date" value={form.endDate} onChangeText={(v) => setForm((p) => ({ ...p, endDate: v }))} placeholder="YYYY-MM-DD" />
-          <Field label="Reason" value={form.reason} onChangeText={(v) => setForm((p) => ({ ...p, reason: v }))} placeholder="Why do you need leave?" />
+          <Field label={t('start_date')} value={form.startDate} onChangeText={(v) => setForm((p) => ({ ...p, startDate: v }))} placeholder="YYYY-MM-DD" />
+          <Field label={t('end_date')} value={form.endDate} onChangeText={(v) => setForm((p) => ({ ...p, endDate: v }))} placeholder="YYYY-MM-DD" />
+          <Field label={t('reason')} value={form.reason} onChangeText={(v) => setForm((p) => ({ ...p, reason: v }))} placeholder={t('reason_placeholder')} />
           <Pressable style={[styles.submitBtn, !canSubmit && styles.submitDisabled]} onPress={handleSubmit} disabled={!canSubmit}>
-            <Text style={styles.submitText}>Submit Request</Text>
+            <Text style={styles.submitText}>{t('submit_request')}</Text>
           </Pressable>
         </View>
       </Modal>

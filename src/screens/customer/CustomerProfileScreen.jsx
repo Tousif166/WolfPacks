@@ -6,6 +6,8 @@ import {
 import { useAuth } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
 import { ScreenContainer, GradientBand } from '@components/app';
+import LanguageToggle from '@components/ui/LanguageToggle';
+import { LANGUAGES } from '@data/translations';
 import AvatarPortrait from '@components/illustrations/AvatarPortrait';
 import { getBookingsByCustomer } from '@data/mockBookings';
 import brandLogo from '@assets/logo.png';
@@ -33,23 +35,16 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  * are intentionally left untouched to avoid changing shared navigation/behavior.
  */
 
-// App languages — same codes LanguageContext/setLanguage use. Switching here re-renders every
-// screen's t() strings app-wide and persists the choice (MMKV), exactly like the chat widget.
-const LANGUAGE_OPTIONS = [
-  { code: 'en', label: 'English' },
-  { code: 'hi', label: 'हिन्दी' },
-  { code: 'bn', label: 'বাংলা' },
-];
-
 export default function CustomerProfileScreen() {
   const { user, profile, logout } = useAuth();
-  const { language, setLanguage } = useLanguage();
+  const { resolvedLanguage, t } = useLanguage();
 
   const name = profile?.full_name || user?.name || 'User';
   const email = user?.email || profile?.email || '—';
   const phone = profile?.phone || user?.phone || '—';
   const address = profile?.city || user?.address || '—';
-  const langLabel = language === 'hi' ? 'हिन्दी' : language === 'bn' ? 'বাংলা' : 'English';
+  // The language's own self-name (e.g. "हिन्दी"), from the single canonical LANGUAGES list.
+  const langLabel = LANGUAGES.find((l) => l.code === resolvedLanguage)?.label || 'English';
   // Use the EXISTING avatar field if the app provides one (mockUsers.avatar / profile.avatar_url);
   // otherwise gracefully fall back to the initial. No new field, no fake photo.
   const avatarUrl = profile?.avatar_url || user?.avatar || null;
@@ -67,8 +62,8 @@ export default function CustomerProfileScreen() {
 
   return (
     <ScreenContainer>
-      <Text style={styles.h1}>My Profile</Text>
-      <Text style={styles.h1Sub}>Manage your account information</Text>
+      <Text style={styles.h1}>{t('my_profile')}</Text>
+      <Text style={styles.h1Sub}>{t('manage_account')}</Text>
 
       {/* ---- Hero: brand-gradient profile header ---- */}
       <GradientBand
@@ -89,10 +84,10 @@ export default function CustomerProfileScreen() {
           </View>
           <View style={styles.heroTextWrap}>
             <Text style={styles.name} numberOfLines={1}>{name}</Text>
-            <Text style={styles.role}>Customer Account</Text>
+            <Text style={styles.role}>{t('customer_account')}</Text>
             <View style={styles.memberPill}>
               <ShieldCheck size={12} color={colors.white} strokeWidth={2.4} />
-              <Text style={styles.memberPillText}>Sahakar Seva Member</Text>
+              <Text style={styles.memberPillText}>{t('member')}</Text>
             </View>
           </View>
         </View>
@@ -101,29 +96,29 @@ export default function CustomerProfileScreen() {
       {/* ---- Your Activity (only when real bookings exist; NO rating) ---- */}
       {hasActivity ? (
         <View style={styles.statsCard}>
-          <StatCell icon={CalendarCheck} tint={colors.primary600} bg={colors.primary50} value={totalBookings} label="Total" />
+          <StatCell icon={CalendarCheck} tint={colors.primary600} bg={colors.primary50} value={totalBookings} label={t('total')} />
           <View style={styles.statDivider} />
-          <StatCell icon={CheckCircle2} tint={colors.success600} bg={colors.success50} value={completedBookings} label="Completed" />
+          <StatCell icon={CheckCircle2} tint={colors.success600} bg={colors.success50} value={completedBookings} label={t('completed')} />
           <View style={styles.statDivider} />
-          <StatCell icon={Clock} tint={colors.accent600} bg={colors.accent50} value={activeBookings} label="Active" />
+          <StatCell icon={Clock} tint={colors.accent600} bg={colors.accent50} value={activeBookings} label={t('active')} />
         </View>
       ) : null}
 
       {/* ---- Personal Information ---- */}
       <View style={styles.sectionHead}>
-        <Text style={styles.sectionTitle}>Personal Information</Text>
-        <Text style={styles.sectionSub}>Your account details</Text>
+        <Text style={styles.sectionTitle}>{t('personal_information')}</Text>
+        <Text style={styles.sectionSub}>{t('account_details')}</Text>
       </View>
       <View style={styles.card}>
-        <InfoItem icon={Mail} tint={colors.primary600} bg={colors.primary50} label="Email" value={email} />
-        <InfoItem icon={Phone} tint={colors.success600} bg={colors.success50} label="Phone" value={phone} />
-        <InfoItem icon={MapPin} tint={colors.danger500} bg={colors.danger50} label="Location" value={address} last />
+        <InfoItem icon={Mail} tint={colors.primary600} bg={colors.primary50} label={t('email')} value={email} />
+        <InfoItem icon={Phone} tint={colors.success600} bg={colors.success50} label={t('phone')} value={phone} />
+        <InfoItem icon={MapPin} tint={colors.danger500} bg={colors.danger50} label={t('location')} value={address} last />
       </View>
 
       {/* ---- Language (interactive — switches the app language app-wide) ---- */}
       <View style={styles.sectionHead}>
-        <Text style={styles.sectionTitle}>Language</Text>
-        <Text style={styles.sectionSub}>Choose your preferred language</Text>
+        <Text style={styles.sectionTitle}>{t('language')}</Text>
+        <Text style={styles.sectionSub}>{t('language_sub')}</Text>
       </View>
       <View style={styles.card}>
         <View style={styles.langRowTop}>
@@ -131,26 +126,13 @@ export default function CustomerProfileScreen() {
             <Globe size={18} color={colors.accent600} strokeWidth={2.2} />
           </View>
           <View style={styles.infoTextWrap}>
-            <Text style={styles.infoLabel}>Language</Text>
+            <Text style={styles.infoLabel}>{t('language')}</Text>
             <Text style={styles.infoValue}>{langLabel}</Text>
           </View>
         </View>
-        <View style={styles.langOptions}>
-          {LANGUAGE_OPTIONS.map((opt) => {
-            const active = (language || 'en') === opt.code;
-            return (
-              <Pressable
-                key={opt.code}
-                style={[styles.langChip, active && styles.langChipActive]}
-                onPress={() => setLanguage(opt.code)}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-                accessibilityLabel={`Set language to ${opt.label}`}
-              >
-                <Text style={[styles.langChipText, active && styles.langChipTextActive]}>{opt.label}</Text>
-              </Pressable>
-            );
-          })}
+        <View style={styles.langToggleWrap}>
+          {/* The canonical segmented control — same one used in the header and on first launch. */}
+          <LanguageToggle size="md" />
         </View>
       </View>
 
@@ -158,8 +140,8 @@ export default function CustomerProfileScreen() {
       {savedAddresses?.length ? (
         <>
           <View style={styles.sectionHead}>
-            <Text style={styles.sectionTitle}>Saved Addresses</Text>
-            <Text style={styles.sectionSub}>Where we deliver your services</Text>
+            <Text style={styles.sectionTitle}>{t('saved_addresses')}</Text>
+            <Text style={styles.sectionSub}>{t('where_we_deliver')}</Text>
           </View>
           <View style={styles.card}>
             {savedAddresses.map((addr, i) => (
@@ -182,20 +164,20 @@ export default function CustomerProfileScreen() {
 
       {/* ---- Account Actions ---- */}
       <View style={styles.sectionHead}>
-        <Text style={styles.sectionTitle}>Account Actions</Text>
-        <Text style={styles.sectionSub}>Manage your session</Text>
+        <Text style={styles.sectionTitle}>{t('account_actions')}</Text>
+        <Text style={styles.sectionSub}>{t('manage_session')}</Text>
       </View>
       <View style={styles.card}>
         <Pressable
           style={({ pressed }) => [styles.logoutRow, pressed && styles.logoutRowPressed]}
           onPress={logout}
           accessibilityRole="button"
-          accessibilityLabel="Log out"
+          accessibilityLabel={t('log_out')}
         >
           <View style={styles.logoutIcon}>
             <LogOut size={18} color={colors.danger600} strokeWidth={2.2} />
           </View>
-          <Text style={styles.logoutText}>Log Out</Text>
+          <Text style={styles.logoutText}>{t('log_out')}</Text>
           <ChevronRight size={18} color={colors.danger300} strokeWidth={2.2} />
         </Pressable>
       </View>
@@ -204,9 +186,9 @@ export default function CustomerProfileScreen() {
       <View style={styles.brandBanner}>
         <Image source={brandLogo} style={styles.brandLogo} resizeMode="contain" />
         <View style={styles.brandTextWrap}>
-          <Text style={styles.brandThanks}>Thank you for being part of</Text>
-          <Text style={styles.brandName}>Sahakar Seva</Text>
-          <Text style={styles.brandTagline}>Cleaner homes. Stronger communities.</Text>
+          <Text style={styles.brandThanks}>{t('thank_you_member')}</Text>
+          <Text style={styles.brandName}>{t('brand_name')}</Text>
+          <Text style={styles.brandTagline}>{t('brand_footer_tagline')}</Text>
         </View>
       </View>
     </ScreenContainer>
@@ -296,19 +278,7 @@ const styles = StyleSheet.create({
 
   // ---- Language selector ----
   langRowTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3, paddingTop: spacing.space3, paddingBottom: spacing.space2 },
-  langOptions: { flexDirection: 'row', gap: spacing.space2, paddingBottom: spacing.space4, paddingTop: spacing.space1 },
-  langChip: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: spacing.space3,
-    borderRadius: radii.radiusMd,
-    borderWidth: 1,
-    borderColor: colors.gray200,
-    backgroundColor: colors.surfaceWhite,
-  },
-  langChipActive: { backgroundColor: colors.primary600, borderColor: colors.primary600 },
-  langChipText: { fontSize: fontSizes.fsSm, color: colors.gray700, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold },
-  langChipTextActive: { color: colors.white },
+  langToggleWrap: { paddingBottom: spacing.space4, paddingTop: spacing.space1 },
 
   // ---- Saved addresses ----
   savedRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3, paddingVertical: spacing.space3 },

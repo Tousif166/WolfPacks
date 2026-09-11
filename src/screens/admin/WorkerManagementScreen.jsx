@@ -15,6 +15,7 @@ import {
   Users as UsersIcon,
 } from 'lucide-react-native';
 import { mockWorkers } from '@data/mockWorkers';
+import { getWorkerAvailability, isOnLeave } from '@data/workerStatus';
 import { getWorkerList } from '@services/supabase';
 import { useLanguage } from '@context/LanguageContext';
 import { ScreenContainer } from '@components/app';
@@ -37,14 +38,20 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  *  - Search across name/phone/skills/cooperative (SAME predicate, SAME SearchBar + `search`).
  *  - Ban/unban/remove for source='demo' only (local state); source='registered' → disabled
  *    actions + Lock read-only notice.
- *  - statusVariant/statusLabel: Banned / Registered / Online / Offline.
+ *  - statusVariant/statusLabel: Banned / On leave / Registered / Online / Offline.
  *
- * The status-tab filter (All / Online / Offline) and the Sort control are NEW but 100%
+ * The status-tab filter (All / Online / Offline / On leave) and the Sort control are NEW but 100%
  * FRONTEND-ONLY view state layered on top of the already-fetched `workers` array — they neither
- * call the backend nor alter what's loaded. Nothing is fabricated: Online = available === true,
- * Offline = available === false (registered workers have available === null and are only counted
- * under "All", never invented into a status they don't have). The counts shown are derived live
- * from the same data.
+ * call the backend nor alter what's loaded. Nothing is fabricated: Online = available === true and
+ * not on leave, Offline = available === false and not on leave (registered workers have
+ * available === null and are only counted under "All", never invented into a status they don't
+ * have). The counts shown are derived live from the same data.
+ *
+ * Availability is read from the shared, MMKV-persisted worker-status store (src/data/workerStatus),
+ * so the ONLINE/OFFLINE toggle a worker flips in their own portal is what the admin sees here after
+ * switching logins. "On leave" is derived from the worker's approved leaveRequests covering today
+ * and outranks Online, because such a worker is out of the job pool even with their toggle left on
+ * — which is what keeps new jobs going to other workers.
  *
  * The reference mock shows a per-worker "(N reviews)" figure — no review-count field exists in
  * any data source, so it is NOT rendered (that would be fabricated data). Rating value/stars are
@@ -56,7 +63,11 @@ function normaliseMock(w) {
     id: w.id, name: w.name || '—', phone: w.phone || '—', cooperative: w.cooperative || '—', joinDate: w.joinDate || '—',
     skills: Array.isArray(w.skills) ? w.skills : [], certificates: Array.isArray(w.certificates) ? w.certificates : [],
     totalJobs: w.totalJobs ?? 0, earnings: w.earnings ?? 0, rating: w.rating ?? null, fairnessPosition: w.fairnessPosition ?? null,
-    available: w.available ?? false, verified: w.verified ?? false, banned: w.banned ?? false, source: 'demo',
+    // Availability reflects what the worker actually toggled in their own portal (persisted), not
+    // just the seeded flag. onLeave is derived from their approved leave requests covering today.
+    available: getWorkerAvailability(w.id, w.available ?? false),
+    onLeave: isOnLeave(w.leaveRequests),
+    verified: w.verified ?? false, banned: w.banned ?? false, source: 'demo',
   };
 }
 
@@ -125,14 +136,19 @@ export default function WorkerManagementScreen() {
     );
   });
 
-  // Live status counts derived from loaded data (no fabrication).
-  const onlineCount = workers.filter((w) => w.available === true).length;
-  const offlineCount = workers.filter((w) => w.available === false).length;
+  // Live status counts derived from loaded data (no fabrication). A worker on approved leave is
+  // NOT counted as online — they cannot take work today.
+  const isOnline = (w) => w.available === true && !w.onLeave;
+  const isOffline = (w) => w.available === false && !w.onLeave;
+  const onlineCount = workers.filter(isOnline).length;
+  const offlineCount = workers.filter(isOffline).length;
+  const onLeaveCount = workers.filter((w) => w.onLeave).length;
 
   const filtered = useMemo(() => {
     let list = searched;
-    if (statusFilter === 'online') list = list.filter((w) => w.available === true);
-    else if (statusFilter === 'offline') list = list.filter((w) => w.available === false);
+    if (statusFilter === 'online') list = list.filter(isOnline);
+    else if (statusFilter === 'offline') list = list.filter(isOffline);
+    else if (statusFilter === 'onleave') list = list.filter((w) => w.onLeave);
     // Client-side sort by rating (nulls last), then name — pure view ordering.
     const sorted = [...list].sort((a, b) => {
       const ra = a.rating ?? -1;
@@ -152,11 +168,23 @@ export default function WorkerManagementScreen() {
     setSelectedWorker(null);
   };
 
-  const demoCount = workers.filter((w) => w.source === 'demo').length;
   const registeredCount = workers.filter((w) => w.source === 'registered').length;
 
-  const statusVariant = (w) => (w.banned ? 'cancelled' : w.source === 'registered' ? 'assigned' : w.available ? 'completed' : 'default');
-  const statusLabel = (w) => (w.banned ? 'Banned' : w.source === 'registered' ? 'Registered' : w.available ? 'Online' : 'Offline');
+  // Status precedence: Banned > On leave > Registered (no availability data) > Online / Offline.
+  // On leave outranks Online because such a worker is out of the job pool even if their toggle
+  // was left on.
+  const statusVariant = (w) =>
+    w.banned ? 'cancelled'
+      : w.onLeave ? 'pending'
+      : w.source === 'registered' ? 'assigned'
+      : w.available ? 'completed'
+      : 'default';
+  const statusLabel = (w) =>
+    w.banned ? t('status_banned')
+      : w.onLeave ? t('on_leave')
+      : w.source === 'registered' ? t('status_registered')
+      : w.available ? t('status_online')
+      : t('status_offline');
   const earningsDisplay = (e) => (e ?? 0).toLocaleString();
 
   const enter = useRef(new Animated.Value(0)).current;
@@ -170,13 +198,13 @@ export default function WorkerManagementScreen() {
       <View style={styles.headerRow}>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={styles.h1}>
-            {t('workers')} <Text style={styles.h1Accent}>Management</Text>
+            {t('workers')} <Text style={styles.h1Accent}>{t('management')}</Text>
           </Text>
           <Text style={styles.countText} numberOfLines={1}>
-            {workers.length} total · {demoCount} demo
-            {registeredCount > 0 ? ` · ${registeredCount} registered` : ''}
+            {t('total_count', { count: workers.length })}
+            {registeredCount > 0 ? t('registered_suffix', { count: registeredCount }) : ''}
           </Text>
-          <Text style={styles.tagline}>Skilled hands. Stronger communities.</Text>
+          <Text style={styles.tagline}>{t('workers_tagline')}</Text>
         </View>
         <View style={styles.headerBadge}>
           <UsersIcon size={26} color={colors.primary600} strokeWidth={2.2} />
@@ -186,7 +214,7 @@ export default function WorkerManagementScreen() {
       {fetchLoading && (
         <View style={styles.loadingRow}>
           <RefreshCw size={13} color={colors.gray500} />
-          <Text style={styles.loadingText}>Loading…</Text>
+          <Text style={styles.loadingText}>{t('loading')}</Text>
         </View>
       )}
 
@@ -194,9 +222,9 @@ export default function WorkerManagementScreen() {
         <View style={styles.errorBanner}>
           <AlertTriangle size={16} color={colors.warning800} />
           <View style={{ flex: 1 }}>
-            <Text style={styles.errorTitle}>Could not fetch registered workers.</Text>
-            <Text style={styles.errorText}>Demo workers are still shown. {fetchError}</Text>
-            <Pressable onPress={loadRealWorkers}><Text style={styles.retryText}>Retry</Text></Pressable>
+            <Text style={styles.errorTitle}>{t('fetch_workers_error')}</Text>
+            <Text style={styles.errorText}>{t('demo_workers_shown', { error: fetchError })}</Text>
+            <Pressable onPress={loadRealWorkers}><Text style={styles.retryText}>{t('retry')}</Text></Pressable>
           </View>
         </View>
       )}
@@ -204,7 +232,7 @@ export default function WorkerManagementScreen() {
       {/* ---------------- Search + filter button ---------------- */}
       <View style={styles.searchRow}>
         <View style={{ flex: 1 }}>
-          <SearchBar placeholder="Search name, skill, phone…" value={search} onChangeText={setSearch} />
+          <SearchBar placeholder={t('search_workers')} value={search} onChangeText={setSearch} />
         </View>
         <Pressable
           style={({ pressed }) => [styles.filterBtn, pressed && styles.filterBtnPressed]}
@@ -219,29 +247,38 @@ export default function WorkerManagementScreen() {
       {/* ---------------- Status tabs + Sort ---------------- */}
       <View style={styles.tabsRow}>
         <FilterTab
-          label={`All Workers (${workers.length})`}
+          label={`${t('all_tab')} (${workers.length})`}
           active={statusFilter === 'all'}
           onPress={() => setStatusFilter('all')}
         />
         <FilterTab
-          label={`Online (${onlineCount})`}
+          label={`${t('status_online')} (${onlineCount})`}
           active={statusFilter === 'online'}
           onPress={() => setStatusFilter('online')}
           dotColor={colors.success500}
         />
         <FilterTab
-          label={`Offline (${offlineCount})`}
+          label={`${t('status_offline')} (${offlineCount})`}
           active={statusFilter === 'offline'}
           onPress={() => setStatusFilter('offline')}
           dotColor={colors.gray400}
         />
+        {/* Only surfaced when someone is actually on leave — no empty state invented. */}
+        {onLeaveCount > 0 && (
+          <FilterTab
+            label={`${t('on_leave')} (${onLeaveCount})`}
+            active={statusFilter === 'onleave'}
+            onPress={() => setStatusFilter('onleave')}
+            dotColor={colors.warning500}
+          />
+        )}
         <Pressable
           style={styles.sortTab}
           onPress={() => setSortDesc((s) => !s)}
           accessibilityRole="button"
           accessibilityLabel="Toggle sort order"
         >
-          <Text style={styles.sortText}>Sort</Text>
+          <Text style={styles.sortText}>{t('sort')}</Text>
           <ChevronDown
             size={14}
             color={colors.gray600}
@@ -264,7 +301,7 @@ export default function WorkerManagementScreen() {
         ))}
         {filtered.length === 0 && (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyText}>No workers match your search or filter.</Text>
+            <Text style={styles.emptyText}>{t('no_workers_match')}</Text>
           </View>
         )}
       </Animated.View>
@@ -277,10 +314,8 @@ export default function WorkerManagementScreen() {
               <View style={styles.readOnlyNotice}>
                 <Lock size={15} color={colors.primary700} />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.readOnlyTitle}>Registered worker — read only</Text>
-                  <Text style={styles.readOnlyText}>
-                    Ban / Remove will be available after admin persistence is implemented. Skills and earnings populate once the worker completes onboarding.
-                  </Text>
+                  <Text style={styles.readOnlyTitle}>{t('read_only_title')}</Text>
+                  <Text style={styles.readOnlyText}>{t('read_only_text')}</Text>
                 </View>
               </View>
             )}
@@ -299,12 +334,12 @@ export default function WorkerManagementScreen() {
             </View>
 
             <View style={styles.modalDetailGrid}>
-              <Detail label="Phone" value={selectedWorker.phone || '—'} />
-              <Detail label="Cooperative" value={selectedWorker.cooperative || '—'} />
-              <Detail label="Joined" value={selectedWorker.joinDate} />
-              <Detail label="Jobs Done" value={String(selectedWorker.totalJobs)} />
-              <Detail label="Earnings" value={`₹${earningsDisplay(selectedWorker.earnings)}`} />
-              <Detail label="Rating" value={selectedWorker.rating != null ? `${selectedWorker.rating.toFixed(1)} ⭐` : '—'} />
+              <Detail label={t('phone')} value={selectedWorker.phone || '—'} />
+              <Detail label={t('cooperative_label')} value={selectedWorker.cooperative || '—'} />
+              <Detail label={t('joined_label')} value={selectedWorker.joinDate} />
+              <Detail label={t('jobs_done')} value={String(selectedWorker.totalJobs)} />
+              <Detail label={t('earnings_label')} value={`₹${earningsDisplay(selectedWorker.earnings)}`} />
+              <Detail label={t('rating')} value={selectedWorker.rating != null ? `${selectedWorker.rating.toFixed(1)} ⭐` : '—'} />
             </View>
 
             <View style={styles.modalActions}>
@@ -358,6 +393,7 @@ function FilterTab({ label, active, onPress, dotColor }) {
 /* ------------------------------------------------------------------ */
 
 function WorkerCard({ worker, statusVariant, statusLabel, earningsDisplay, onOpen }) {
+  const { t } = useLanguage();
   const scale = useRef(new Animated.Value(1)).current;
   const to = (v) => Animated.spring(scale, { toValue: v, useNativeDriver: true, friction: 7, tension: 180 }).start();
 
@@ -390,12 +426,12 @@ function WorkerCard({ worker, statusVariant, statusLabel, earningsDisplay, onOpe
 
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={styles.workerName} numberOfLines={1}>
-              {worker.name}{worker.banned ? ' (Banned)' : ''}
+              {worker.name}{worker.banned ? ` ${t('banned_paren')}` : ''}
             </Text>
             {worker.rating != null ? (
               <StarRating rating={worker.rating} size={13} />
             ) : (
-              <Text style={styles.notRated}>Not rated yet</Text>
+              <Text style={styles.notRated}>{t('not_rated_yet')}</Text>
             )}
           </View>
 
@@ -425,13 +461,13 @@ function WorkerCard({ worker, statusVariant, statusLabel, earningsDisplay, onOpe
             ))}
           </View>
         ) : isRegistered ? (
-          <Text style={styles.skillsPending}>Skills pending setup</Text>
+          <Text style={styles.skillsPending}>{t('skills_pending')}</Text>
         ) : null}
 
         {/* Profile action — same behaviour as tapping the card (opens the detail modal) */}
         <View style={styles.cardFooter}>
-          <Pressable style={styles.viewProfileBtn} onPress={onOpen} accessibilityLabel={`View profile of ${worker.name}`}>
-            <Text style={styles.viewProfileText}>View Profile</Text>
+          <Pressable style={styles.viewProfileBtn} onPress={onOpen} accessibilityLabel={t('view_profile')}>
+            <Text style={styles.viewProfileText}>{t('view_profile')}</Text>
             <ArrowRight size={13} color={colors.success700} strokeWidth={2.6} />
           </Pressable>
         </View>
@@ -446,6 +482,7 @@ function StatusPill({ variant, label }) {
     default: { bg: colors.gray100, fg: colors.gray600, dot: colors.gray400 }, // Offline
     assigned: { bg: colors.primary50, fg: colors.primary700, dot: colors.primary500 }, // Registered
     cancelled: { bg: colors.danger50, fg: colors.danger700, dot: colors.danger500 }, // Banned
+    pending: { bg: colors.warning50, fg: colors.warning700, dot: colors.warning500 }, // On leave
   };
   const c = map[variant] || map.default;
   return (

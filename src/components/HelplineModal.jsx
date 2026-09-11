@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Phone, AlertCircle, Headphones, Shield, MessageCircle, X, Building2, Info, ChevronRight } from 'lucide-react-native';
+import { useLanguage } from '@context/LanguageContext';
 import { colors, spacing, radii, shadows, glass, fontSizes, fontWeights, fontFamilies } from '@theme';
 
 /**
@@ -40,11 +41,11 @@ import { colors, spacing, radii, shadows, glass, fontSizes, fontWeights, fontFam
 const HELPLINES = [
   {
     id: 1,
-    label: 'Sahakar Seva Helpline',
+    labelKey: 'hl_sahakar_label',
     number: '1800-XXX-SEVA',
     type: 'toll-free',
     icon: Headphones,
-    desc: '24x7 Toll-Free • Service booking help and general assistance',
+    descKey: 'hl_sahakar_desc',
     tint: '#ecfdf5',
     border: '#a7f3d0',
     accent: colors.success600,
@@ -52,11 +53,11 @@ const HELPLINES = [
   },
   {
     id: 2,
-    label: 'Worker Welfare Helpline',
+    labelKey: 'hl_welfare_label',
     number: '1800-XXX-KAAM',
     type: 'toll-free',
     icon: Shield,
-    desc: '24x7 Toll-Free • Worker rights & safety support',
+    descKey: 'hl_welfare_desc',
     tint: '#eff6ff',
     border: '#bfdbfe',
     accent: colors.info600,
@@ -64,11 +65,11 @@ const HELPLINES = [
   },
   {
     id: 3,
-    label: 'Emergency SOS',
+    labelKey: 'hl_sos_label',
     number: '112',
     type: 'emergency',
     icon: AlertCircle,
-    desc: 'Police / Fire / Medical Emergency • Immediate help',
+    descKey: 'hl_sos_desc',
     tint: '#fef2f2',
     border: '#fecaca',
     accent: colors.danger500,
@@ -76,11 +77,11 @@ const HELPLINES = [
   },
   {
     id: 4,
-    label: 'Consumer Forum',
+    labelKey: 'hl_consumer_label',
     number: '1800-XXX-COURT',
     type: 'toll-free',
     icon: MessageCircle,
-    desc: 'Dispute resolution & complaints • Get support for service issues',
+    descKey: 'hl_consumer_desc',
     tint: '#f5f3ff',
     border: '#ddd6fe',
     accent: '#8b5cf6',
@@ -89,6 +90,7 @@ const HELPLINES = [
 ];
 
 export default function HelplineModal({ isOpen, onClose }) {
+  const { t } = useLanguage();
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
 
@@ -135,8 +137,8 @@ export default function HelplineModal({ isOpen, onClose }) {
               <Headphones size={26} color={colors.success600} strokeWidth={2.1} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.title}>Helpline Numbers</Text>
-              <Text style={styles.subtitle}>We're here 24x7 to help you</Text>
+              <Text style={styles.title}>{t('helpline_numbers')}</Text>
+              <Text style={styles.subtitle}>{t('helpline_here_24x7')}</Text>
             </View>
             <Pressable style={styles.close} onPress={onClose} accessibilityLabel="Close" hitSlop={8}>
               <X size={20} color={colors.gray600} strokeWidth={2.2} />
@@ -144,7 +146,7 @@ export default function HelplineModal({ isOpen, onClose }) {
           </View>
 
           <View style={styles.badgeChip}>
-            <Text style={styles.badgeChipText}>Support • Safety • Your Rights • Always</Text>
+            <Text style={styles.badgeChipText}>{t('helpline_badge')}</Text>
           </View>
 
           <ScrollView
@@ -162,17 +164,17 @@ export default function HelplineModal({ isOpen, onClose }) {
 
                   <View style={styles.cardInfo}>
                     <View style={styles.cardTitleRow}>
-                      <Text style={styles.cardLabel} numberOfLines={2}>{h.label}</Text>
+                      <Text style={styles.cardLabel} numberOfLines={2}>{t(h.labelKey)}</Text>
                       <View style={[styles.liveBadge, { borderColor: h.border }]}>
                         <View style={[styles.liveDot, { backgroundColor: h.accent }]} />
                         <Text style={[styles.liveText, { color: h.accentDark }]}>24x7</Text>
                       </View>
                     </View>
-                    <Text style={styles.cardDesc}>{h.desc}</Text>
+                    <Text style={styles.cardDesc}>{t(h.descKey)}</Text>
                     <Text style={[styles.cardNumber, { color: h.accentDark }]}>{h.number}</Text>
                   </View>
 
-                  <CallButton color={h.accent} onPress={() => call(h.number)} label={`Call ${h.label}`} />
+                  <CallButton color={h.accent} onPress={() => call(h.number)} label={t('call_prefix', { label: t(h.labelKey) })} />
                 </View>
               );
             })}
@@ -185,14 +187,14 @@ export default function HelplineModal({ isOpen, onClose }) {
               <View style={{ flex: 1 }}>
                 <View style={styles.offlineHeadRow}>
                   <Info size={13} color={colors.info600} strokeWidth={2.4} />
-                  <Text style={styles.offlineHint}>For offline registration visit your nearest</Text>
+                  <Text style={styles.offlineHint}>{t('offline_registration')}</Text>
                 </View>
-                <Text style={styles.offlineStrong}>Seva Kendra</Text>
+                <Text style={styles.offlineStrong}>{t('seva_kendra')}</Text>
               </View>
               <ChevronRight size={20} color={colors.info600} strokeWidth={2.2} />
             </View>
 
-            <Text style={styles.footer}>Together for a safer, stronger community 💙</Text>
+            <Text style={styles.footer}>{t('helpline_footer')}</Text>
           </ScrollView>
         </Animated.View>
       </View>

@@ -1,16 +1,17 @@
-import { useState, useEffect, useRef } from 'react';
-import { View, Text, Pressable, ScrollView, StyleSheet, ActivityIndicator, Image, Alert, Animated, Easing, TextInput, useWindowDimensions } from 'react-native';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { View, Text, Pressable, ScrollView, StyleSheet, ActivityIndicator, Image, Alert, Animated, Easing, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import {
   Calendar, Clock, Check, ArrowLeft, ArrowRight,
   Sparkles, Receipt, Navigation, ShieldCheck, Printer, ClipboardList,
   Camera, ImagePlus, X, Copy, Home, Heart,
-  Search, SlidersHorizontal, Users, Leaf, IndianRupee, ChevronRight, Bot,
+  Users, Leaf, IndianRupee, ChevronRight, Bot,
   Umbrella, Zap, Sunrise, Sun, Sunset, MapPin,
 } from 'lucide-react-native';
-import { mockServices, currentWeather } from '@data/mockServices';
-import { addBooking, resolveCustomerId } from '@data/mockBookings';
+import { mockServices, currentWeather, serviceName } from '@data/mockServices';
+import { addBooking, resolveCustomerId, getBookingById, DEFAULT_ADDRESS } from '@data/mockBookings';
 import { getServiceDiagnosis } from '@services/aiService';
 import { shareReceipt } from '@utils/receipt';
 import { useAuth } from '@context/AuthContext';
@@ -75,10 +76,10 @@ const TIME_SLOTS = [
 // selection still runs setTime(slot.val) with the same value. 10:00 AM is flagged recommended
 // because it is already the app's default selected time (useState('10:00 AM')).
 const SLOT_META = {
-  ASAP: { Icon: Zap, title: 'ASAP', note: '45 mins', sub: 'Get it done soon' },
-  '10:00 AM': { Icon: Sunrise, title: '10:00 AM', sub: 'Morning slot', recommended: true },
-  '02:00 PM': { Icon: Sun, title: '02:00 PM', sub: 'Afternoon slot' },
-  '05:00 PM': { Icon: Sunset, title: '05:00 PM', sub: 'Evening slot' },
+  ASAP: { Icon: Zap, title: 'ASAP', noteKey: 'slot_asap_note', subKey: 'slot_asap_sub' },
+  '10:00 AM': { Icon: Sunrise, title: '10:00 AM', subKey: 'slot_morning', recommended: true },
+  '02:00 PM': { Icon: Sun, title: '02:00 PM', subKey: 'slot_afternoon' },
+  '05:00 PM': { Icon: Sunset, title: '05:00 PM', subKey: 'slot_evening' },
 };
 
 // Frontend-only pretty date for display (e.g. "Today, 09 Sep 2026" + "Wednesday"). Formats the
@@ -125,7 +126,7 @@ function calcBilling(basePrice, weatherMultiplier, isRuralOrDistant = false) {
   return { base: adjusted, gst, welfareCess, distanceSurcharge, total };
 }
 
-const STEP_LABELS = ['Service', 'Describe', 'Schedule', 'Review'];
+const STEP_LABEL_KEYS = ['step_service', 'step_describe', 'step_schedule', 'step_review'];
 
 // Frontend-only description limit (matches the "/300" counter shown in the UI). Enforced at the
 // input level via TextInput maxLength and clamped for programmatic writes (quick-select + mic).
@@ -156,10 +157,10 @@ const FRONT_DESC = {
 
 // PRESENTATION-ONLY trust/value indicators (no backend data).
 const TRUST_ITEMS = [
-  { icon: ShieldCheck, label: 'Verified\nProfessionals', bg: '#ecfdf5', fg: '#059669' },
-  { icon: IndianRupee, label: 'Transparent\nPricing', bg: '#fff7ed', fg: '#ea580c' },
-  { icon: Users, label: 'Community\nTrusted', bg: '#f5f3ff', fg: '#7c3aed' },
-  { icon: Leaf, label: 'Quality\nAssured', bg: '#eff6ff', fg: '#2563eb' },
+  { icon: ShieldCheck, key: 'verified_professionals_nl', bg: '#ecfdf5', fg: '#059669' },
+  { icon: IndianRupee, key: 'transparent_pricing_nl', bg: '#fff7ed', fg: '#ea580c' },
+  { icon: Users, key: 'community_trusted_nl', bg: '#f5f3ff', fg: '#7c3aed' },
+  { icon: Leaf, key: 'quality_assured_nl', bg: '#eff6ff', fg: '#2563eb' },
 ];
 
 // PRESENTATION-ONLY pastel tint per service id for the card icon area.
@@ -184,7 +185,7 @@ export default function BookingScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
   const { width: screenWidth } = useWindowDimensions();
   const { user, profile } = useAuth();
-  const { language } = useLanguage();
+  const { language, t } = useLanguage();
 
   // Square service tile size, computed dynamically so exactly 2 cards fit per row and stay a
   // true 1:1 square on any phone width: (screen - side padding*2 - gap) / 2.
@@ -200,10 +201,8 @@ export default function BookingScreen({ navigation, route }) {
   // polish pass. Kept as state so the picker can wire straight in.
   const [date] = useState(new Date().toISOString().split('T')[0]);
   const [time, setTime] = useState('10:00 AM');
-  const [address, setAddress] = useState(profile?.address || '12, Sector 45, Gurugram, Haryana');
+  const [address, setAddress] = useState(profile?.address || DEFAULT_ADDRESS);
   const [confirmedBooking, setConfirmedBooking] = useState(null);
-  // Frontend-only client-side search over the existing mockServices list (no backend query).
-  const [serviceQuery, setServiceQuery] = useState('');
   // AI diagnosis (Phase 9, Groq-backed). Photo/vision input wired in Phase 10a via
   // react-native-image-picker — a selected photo feeds getServiceDiagnosis's vision path.
   const [aiDiagnosis, setAiDiagnosis] = useState(null);
@@ -231,6 +230,50 @@ export default function BookingScreen({ navigation, route }) {
     }
   }, [preselected, preselectedDesc]);
 
+  // Put the wizard back to a clean step-1 state. Also clears the deep-link params so tapping the
+  // SAME service on the dashboard again counts as a param change and re-triggers the effect above.
+  const resetWizard = useCallback(() => {
+    setConfirmedBooking(null);
+    setStep(1);
+    setSelectedService('plumbing');
+    setDescription('');
+    setTime('10:00 AM');
+    setPhoto(null);
+    setAiDiagnosis(null);
+    setAiError(null);
+    setDiagnosing(false);
+    navigation.setParams({ service: undefined, desc: undefined });
+  }, [navigation]);
+
+  // `confirmedBooking` lives in state, and this screen is a MOUNTED TAB — it is not unmounted when
+  // the user navigates away. Without this, the completed-booking confirmation stayed in state
+  // forever, so returning to the Book Service tab re-displayed the previous confirmation and the
+  // customer could never start a second booking (only a full logout, which remounts the tree,
+  // appeared to "fix" it).
+  //
+  // Reset on BLUR, and only when the visit actually ended in a confirmed booking: that way an
+  // in-progress, half-filled wizard survives a tab switch instead of being wiped.
+  const confirmedRef = useRef(null);
+  confirmedRef.current = confirmedBooking;
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        if (confirmedRef.current) resetWizard();
+      },
+      [resetWizard],
+    ),
+  );
+
+  // Blur alone doesn't cover tapping the "Book Service" tab while it is ALREADY the focused tab
+  // (no blur/focus transition happens). Listening for tabPress catches that intent too, so the
+  // tab button always means "start a new booking" once one has been completed.
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('tabPress', () => {
+      if (confirmedRef.current) resetWizard();
+    });
+    return unsubscribe;
+  }, [navigation, resetWizard]);
+
   const service = mockServices.find((s) => s.id === selectedService) || mockServices[0];
   const weatherMultiplier = currentWeather.multiplier * (service.weatherMultiplier || 1);
   const weatherActive = currentWeather.multiplier > 1;
@@ -245,7 +288,7 @@ export default function BookingScreen({ navigation, route }) {
   const onPicked = (result) => {
     if (result?.didCancel) return;
     if (result?.errorCode) {
-      Alert.alert('Photo unavailable', result.errorMessage || 'Could not access the camera/gallery.');
+      Alert.alert(t('photo_unavailable'), result.errorMessage || t('photo_access_error'));
       return;
     }
     const asset = result?.assets?.[0];
@@ -281,17 +324,15 @@ export default function BookingScreen({ navigation, route }) {
     const newBooking = addBooking({
       customerId: resolveCustomerId(user.id),
       customerName: profile?.full_name || user?.email || 'Customer',
-      workerId: 'w1',
-      workerName: 'Suresh Kumar',
-      workerRating: 4.8,
-      workerPhone: '+91 76543 21098',
+      // No worker is attached at booking time — the job goes to the worker portal's feed and a
+      // worker has to accept it before a professional (and live tracking) exists.
       serviceId: service.id,
       serviceName: service.name,
       description: description.trim() || `${service.name} Standard Inspection & Service`,
       address,
       date,
       time,
-      status: 'en-route',
+      status: 'booked',
       basePrice: service.basePrice,
       weatherMultiplier,
       weatherCondition: weatherActive ? currentWeather.condition : 'Clear',
@@ -325,12 +366,12 @@ export default function BookingScreen({ navigation, route }) {
     <View style={styles.root}>
       {/* Step indicator */}
       <View style={[styles.stepBar, { paddingTop: insets.top + spacing.space3 }]}>
-        {STEP_LABELS.map((label, i) => {
+        {STEP_LABEL_KEYS.map((labelKey, i) => {
           const n = i + 1;
           const active = step === n;
           const done = step > n;
           return (
-            <View key={label} style={styles.stepItem}>
+            <View key={labelKey} style={styles.stepItem}>
               <View style={styles.stepRow}>
                 {/* left connector (hidden on the first step) */}
                 <View style={[styles.stepLine, i === 0 && styles.stepLineHidden, done && styles.stepLineDone]} />
@@ -338,9 +379,9 @@ export default function BookingScreen({ navigation, route }) {
                   {done ? <Check size={13} color={colors.white} strokeWidth={3} /> : <Text style={[styles.stepNum, (active || done) && styles.stepNumActive]}>{n}</Text>}
                 </View>
                 {/* right connector (hidden on the last step) */}
-                <View style={[styles.stepLine, i === STEP_LABELS.length - 1 && styles.stepLineHidden, step > n && styles.stepLineDone]} />
+                <View style={[styles.stepLine, i === STEP_LABEL_KEYS.length - 1 && styles.stepLineHidden, step > n && styles.stepLineDone]} />
               </View>
-              <Text style={[styles.stepLabel, active && styles.stepLabelActive]}>{label}</Text>
+              <Text style={[styles.stepLabel, active && styles.stepLabelActive]}>{t(labelKey)}</Text>
             </View>
           );
         })}
@@ -358,49 +399,25 @@ export default function BookingScreen({ navigation, route }) {
             {/* Header with a very soft purple glow behind it */}
             <View style={styles.s1HeaderWrap}>
               <View pointerEvents="none" style={styles.s1Glow} />
-              <Text style={styles.s1Title}>What service do you need?</Text>
-              <Text style={styles.s1Sub}>Select a verified cooperative service category</Text>
+              <Text style={styles.s1Title}>{t('what_service_need')}</Text>
+              <Text style={styles.s1Sub}>{t('select_category')}</Text>
             </View>
 
             {/* Trust / value indicators (presentation-only) */}
             <View style={styles.trustRow}>
-              {TRUST_ITEMS.map(({ icon: TIcon, label, bg, fg }) => (
-                <View key={label} style={styles.trustItem}>
+              {TRUST_ITEMS.map(({ icon: TIcon, key, bg, fg }) => (
+                <View key={key} style={styles.trustItem}>
                   <View style={[styles.trustIcon, { backgroundColor: bg }]}>
                     <TIcon size={17} color={fg} strokeWidth={2.2} />
                   </View>
-                  <Text style={styles.trustLabel}>{label}</Text>
+                  <Text style={styles.trustLabel}>{t(key)}</Text>
                 </View>
               ))}
-            </View>
-
-            {/* Search + filter (client-side filter over the existing list) */}
-            <View style={styles.searchRow}>
-              <View style={styles.searchBox}>
-                <Search size={18} color={colors.gray400} strokeWidth={2.2} />
-                <TextInput
-                  style={styles.searchInput}
-                  value={serviceQuery}
-                  onChangeText={setServiceQuery}
-                  placeholder="Search for a service..."
-                  placeholderTextColor={colors.gray400}
-                  returnKeyType="search"
-                />
-                {serviceQuery.length > 0 && (
-                  <Pressable onPress={() => setServiceQuery('')} hitSlop={8} accessibilityLabel="Clear search">
-                    <X size={16} color={colors.gray400} />
-                  </Pressable>
-                )}
-              </View>
-              <View style={styles.filterBtn}>
-                <SlidersHorizontal size={18} color={colors.primary600} strokeWidth={2.2} />
-              </View>
             </View>
 
             {/* Premium 2-column service grid — same data + same selection behaviour */}
             <View style={styles.svcGrid}>
               {mockServices
-                .filter((s) => s.name.toLowerCase().includes(serviceQuery.trim().toLowerCase()))
                 .map((s) => {
                   const SIcon = serviceIcon(s.icon);
                   const selected = selectedService === s.id;
@@ -410,7 +427,7 @@ export default function BookingScreen({ navigation, route }) {
                       key={s.id}
                       style={[styles.svcCard, { width: svcCardSize, height: svcCardSize }, selected && styles.svcCardSelected]}
                       onPress={() => { setSelectedService(s.id); setStep(2); }}
-                      accessibilityLabel={`${s.name}, starting from ₹${s.basePrice}`}
+                      accessibilityLabel={`${serviceName(s, t)}, ₹${s.basePrice}`}
                     >
                       {selected && (
                         <View style={styles.svcCheck}>
@@ -422,13 +439,13 @@ export default function BookingScreen({ navigation, route }) {
                         <View style={[styles.svcIconTile, { backgroundColor: tint }]}>
                           <SIcon size={24} color={s.color} strokeWidth={2} />
                         </View>
-                        <Text style={styles.svcCardName} numberOfLines={2}>{s.name}</Text>
+                        <Text style={styles.svcCardName} numberOfLines={2}>{serviceName(s, t)}</Text>
                         <Text style={styles.svcDesc} numberOfLines={2}>{FRONT_DESC[s.id] || ''}</Text>
                       </View>
                       {/* BOTTOM: price + arrow */}
                       <View style={styles.svcFooter}>
                         <View style={styles.svcPriceWrap}>
-                          <Text style={styles.svcFrom}>Starting from</Text>
+                          <Text style={styles.svcFrom}>{t('starting_from')}</Text>
                           <Text style={styles.svcPrice}>₹{s.basePrice}</Text>
                         </View>
                         <View style={[styles.svcArrow, selected && styles.svcArrowSelected]}>
@@ -446,8 +463,8 @@ export default function BookingScreen({ navigation, route }) {
                 <Leaf size={18} color={colors.success600} strokeWidth={2.2} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.coopTitle}>Supporting Cooperatives</Text>
-                <Text style={styles.coopSub}>Your booking helps local communities grow</Text>
+                <Text style={styles.coopTitle}>{t('supporting_coops')}</Text>
+                <Text style={styles.coopSub}>{t('supporting_coops_sub')}</Text>
               </View>
               <ChevronRight size={20} color={colors.primary400} strokeWidth={2.2} />
             </View>
@@ -463,14 +480,14 @@ export default function BookingScreen({ navigation, route }) {
                 <Icon size={26} color={service.color} strokeWidth={2.1} />
               </View>
               <View style={styles.serviceHeadText}>
-                <Text style={styles.s2Title}>{service.name}</Text>
-                <Text style={styles.s2Sub}>Tell us about the issue so we can find the right expert for you.</Text>
+                <Text style={styles.s2Title}>{serviceName(service, t)}</Text>
+                <Text style={styles.s2Sub}>{t('tell_us_issue')}</Text>
               </View>
             </View>
 
             {/* Quick select — 2-column cards (same append onPress + same tag values) */}
-            <Text style={styles.s2Section}>Quick select</Text>
-            <Text style={styles.s2SectionSub}>Choose the option that best matches your issue</Text>
+            <Text style={styles.s2Section}>{t('quick_select')}</Text>
+            <Text style={styles.s2SectionSub}>{t('quick_select_sub')}</Text>
             <View style={styles.qsGrid}>
               {currentTags.map((tag) => {
                 // Split the leading emoji (icon) from the label text for display only —
@@ -517,7 +534,7 @@ export default function BookingScreen({ navigation, route }) {
             <TextArea
               value={stt.listening && stt.partial ? `${description}${description ? ' ' : ''}${stt.partial}` : description}
               onChangeText={setDescription}
-              placeholder="e.g. Kitchen sink is leaking, water dripping below the pipe…"
+              placeholder={t('desc_placeholder')}
               rows={3}
               maxLength={DESC_MAX}
               showMic
@@ -525,7 +542,7 @@ export default function BookingScreen({ navigation, route }) {
               onMicClick={() => (stt.listening ? stt.stop() : stt.start())}
             />
             {stt.listening && (
-              <Text style={styles.micHint}>Listening… speak now, tap the mic again to stop.</Text>
+              <Text style={styles.micHint}>{t('mic_hint')}</Text>
             )}
             {!stt.listening && stt.error && (
               <Text style={styles.micHintError}>
@@ -539,7 +556,7 @@ export default function BookingScreen({ navigation, route }) {
                 Add a photo <Text style={styles.optional}>(optional)</Text>
               </Text>
             </View>
-            <Text style={styles.s2SectionSub}>A photo helps us understand the issue better</Text>
+            <Text style={styles.s2SectionSub}>{t('photo_helps')}</Text>
             {photo ? (
               <View style={styles.photoPreviewWrap}>
                 <Image source={{ uri: photo.uri }} style={styles.photoPreview} />
@@ -553,13 +570,13 @@ export default function BookingScreen({ navigation, route }) {
                   <View style={styles.photoBtn2Icon}>
                     <Camera size={24} color={colors.primary600} strokeWidth={2} />
                   </View>
-                  <Text style={styles.photoBtn2Text}>Camera</Text>
+                  <Text style={styles.photoBtn2Text}>{t('camera')}</Text>
                 </PressableScale>
                 <PressableScale style={styles.photoBtn2} onPress={pickFromGallery} accessibilityLabel="Gallery">
                   <View style={styles.photoBtn2Icon}>
                     <ImagePlus size={24} color={colors.primary600} strokeWidth={2} />
                   </View>
-                  <Text style={styles.photoBtn2Text}>Gallery</Text>
+                  <Text style={styles.photoBtn2Text}>{t('gallery')}</Text>
                 </PressableScale>
               </View>
             )}
@@ -570,7 +587,7 @@ export default function BookingScreen({ navigation, route }) {
               style={[styles.aiCard, diagnosing && styles.aiCardBusy]}
               onPress={runAiDiagnosis}
               disabled={diagnosing}
-              accessibilityLabel="AI Smart Diagnosis"
+              accessibilityLabel={t('ai_smart_diagnosis')}
             >
               <View style={styles.aiCardIcon}>
                 {diagnosing ? (
@@ -582,16 +599,15 @@ export default function BookingScreen({ navigation, route }) {
               <View style={{ flex: 1 }}>
                 <View style={styles.aiCardTitleRow}>
                   <Text style={styles.aiCardTitle}>
-                    {diagnosing ? 'Analyzing your issue…' : photo ? 'AI Diagnosis with Photo' : 'AI Smart Diagnosis'}
+                    {diagnosing ? t('ai_analyzing') : photo ? t('ai_diagnosis_photo') : t('ai_smart_diagnosis')}
                   </Text>
                   <View style={styles.aiBadge}>
                     <Sparkles size={10} color={colors.primary700} strokeWidth={2.4} />
-                    <Text style={styles.aiBadgeText}>Powered by AI</Text>
+                    <Text style={styles.aiBadgeText}>{t('powered_by_ai')}</Text>
                   </View>
                 </View>
                 <Text style={styles.aiCardText}>
-                  Get an instant expert read on the likely cause, urgency, and repair time.
-                  {photo ? ' Your photo will be analyzed too.' : ' Attach a photo for a sharper diagnosis.'}
+                  {t('ai_card_text')}{photo ? t('ai_card_photo_yes') : t('ai_card_photo_no')}
                 </Text>
               </View>
               <ArrowRight size={18} color={colors.primary600} strokeWidth={2.4} />
@@ -601,7 +617,7 @@ export default function BookingScreen({ navigation, route }) {
               <View style={styles.aiResultCard}>
                 <View style={styles.aiResultHead}>
                   <Sparkles size={16} color={colors.primary600} />
-                  <Text style={styles.aiResultTitle}>Sahakar AI Diagnosis</Text>
+                  <Text style={styles.aiResultTitle}>{t('ai_diagnosis')}</Text>
                 </View>
                 <Text style={styles.aiResultText}>{aiDiagnosis}</Text>
               </View>
@@ -610,7 +626,7 @@ export default function BookingScreen({ navigation, route }) {
             {aiError && (
               <View style={styles.aiErrorCard}>
                 <Text style={styles.aiErrorText}>
-                  Couldn't run AI diagnosis right now. {aiError}
+                  {t('ai_error')} {aiError}
                 </Text>
               </View>
             )}
@@ -623,8 +639,8 @@ export default function BookingScreen({ navigation, route }) {
             {/* Header */}
             <View style={styles.s3HeaderRow}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.s2Title}>Schedule your service</Text>
-                <Text style={styles.s2Sub}>Pick a convenient date and time slot</Text>
+                <Text style={styles.s2Title}>{t('schedule_service')}</Text>
+                <Text style={styles.s2Sub}>{t('pick_date_time')}</Text>
               </View>
               <View style={styles.s3HeaderIcon}>
                 <Calendar size={26} color={colors.primary600} strokeWidth={2} />
@@ -639,9 +655,9 @@ export default function BookingScreen({ navigation, route }) {
                 </View>
                 <View style={{ flex: 1 }}>
                   <View style={styles.rainTitleRow}>
-                    <Text style={styles.rainTitle}>Rain Protection Included</Text>
+                    <Text style={styles.rainTitle}>{t('rain_protection')}</Text>
                     <View style={styles.rainBadge}>
-                      <Text style={styles.rainBadgeText}>For your peace of mind</Text>
+                      <Text style={styles.rainBadgeText}>{t('peace_of_mind')}</Text>
                     </View>
                   </View>
                   <Text style={styles.rainText}>
@@ -653,12 +669,14 @@ export default function BookingScreen({ navigation, route }) {
 
             {/* Quick slots — premium selectable cards (same setTime handler + slot vals) */}
             <View style={styles.descHeadRow}>
-              <Text style={styles.s2Section}>Quick slots</Text>
-              <Text style={styles.s3SectionHint}>Choose a time that works for you</Text>
+              <Text style={styles.s2Section}>{t('quick_slots')}</Text>
+              <Text style={styles.s3SectionHint}>{t('choose_time')}</Text>
             </View>
             <View style={styles.slotGrid}>
               {TIME_SLOTS.map((slot) => {
-                const meta = SLOT_META[slot.val] || { Icon: Clock, title: slot.val, sub: '' };
+                const meta = SLOT_META[slot.val] || { Icon: Clock, title: slot.val, subKey: null };
+                const metaSub = meta.subKey ? t(meta.subKey) : '';
+                const metaNote = meta.noteKey ? t(meta.noteKey) : null;
                 const SlotIcon = meta.Icon;
                 const picked = time === slot.val;
                 return (
@@ -666,11 +684,11 @@ export default function BookingScreen({ navigation, route }) {
                     key={slot.val}
                     style={[styles.slotCard, picked && styles.slotCardSelected]}
                     onPress={() => setTime(slot.val)}
-                    accessibilityLabel={`${meta.title} ${meta.sub}`}
+                    accessibilityLabel={`${meta.title} ${metaSub}`}
                   >
                     {meta.recommended && (
                       <View style={styles.slotRecommended}>
-                        <Text style={styles.slotRecommendedText}>Recommended</Text>
+                        <Text style={styles.slotRecommendedText}>{t('recommended')}</Text>
                       </View>
                     )}
                     <View style={styles.slotTopRow}>
@@ -683,9 +701,9 @@ export default function BookingScreen({ navigation, route }) {
                     </View>
                     <Text style={styles.slotTitle}>
                       {meta.title}
-                      {meta.note ? <Text style={styles.slotNote}> ({meta.note})</Text> : null}
+                      {metaNote ? <Text style={styles.slotNote}> ({metaNote})</Text> : null}
                     </Text>
-                    <Text style={styles.slotSub}>{meta.sub}</Text>
+                    <Text style={styles.slotSub}>{metaSub}</Text>
                   </PressableScale>
                 );
               })}
@@ -698,7 +716,7 @@ export default function BookingScreen({ navigation, route }) {
                 <View style={styles.dtIcon}>
                   <Calendar size={18} color={colors.primary600} strokeWidth={2.1} />
                 </View>
-                <Text style={styles.dtLabel}>Service date</Text>
+                <Text style={styles.dtLabel}>{t('service_date')}</Text>
                 <Text style={styles.dtValue} numberOfLines={1}>{formatServiceDate(date).primary}</Text>
                 {formatServiceDate(date).weekday ? <Text style={styles.dtSub}>{formatServiceDate(date).weekday}</Text> : null}
               </View>
@@ -706,9 +724,9 @@ export default function BookingScreen({ navigation, route }) {
                 <View style={styles.dtIcon}>
                   <Clock size={18} color={colors.primary600} strokeWidth={2.1} />
                 </View>
-                <Text style={styles.dtLabel}>Preferred time</Text>
+                <Text style={styles.dtLabel}>{t('preferred_time')}</Text>
                 <Text style={styles.dtValue} numberOfLines={1}>{time}</Text>
-                <Text style={styles.dtSub}>{SLOT_META[time]?.sub || 'Selected slot'}</Text>
+                <Text style={styles.dtSub}>{SLOT_META[time]?.subKey ? t(SLOT_META[time].subKey) : t('selected_slot')}</Text>
               </View>
             </View>
 
@@ -718,7 +736,7 @@ export default function BookingScreen({ navigation, route }) {
                 <MapPin size={20} color={colors.primary600} strokeWidth={2.1} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.locLabel}>Service location</Text>
+                <Text style={styles.locLabel}>{t('service_location')}</Text>
                 <TextArea
                   value={address}
                   onChangeText={setAddress}
@@ -733,33 +751,33 @@ export default function BookingScreen({ navigation, route }) {
         {/* STEP 4 — review */}
         {step === 4 && (
           <View>
-            <Text style={styles.h2}>Review & confirm</Text>
-            <Text style={styles.sub}>Fair-price guarantee with cooperative backing</Text>
+            <Text style={styles.h2}>{t('review_confirm')}</Text>
+            <Text style={styles.sub}>{t('fair_price_guarantee')}</Text>
 
             <View style={styles.billCard}>
               <View style={styles.billHead}>
                 <Receipt size={20} color={colors.primary600} />
-                <Text style={styles.billHeadText}>GST-Compliant Invoice Preview</Text>
+                <Text style={styles.billHeadText}>{t('gst_invoice_preview')}</Text>
               </View>
               <View style={styles.billService}>
                 <View style={[styles.serviceHeadIcon, { backgroundColor: service.color + '1A' }]}>
                   <Icon size={22} color={service.color} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.bold}>{service.name}</Text>
+                  <Text style={styles.bold}>{serviceName(service, t)}</Text>
                   <Text style={styles.billMeta}>{date} • {time} • {address.split(',')[0]}</Text>
                 </View>
               </View>
               <View style={styles.billBreakdown}>
-                <BillRow label="Base Service Charge" value={`₹${billing.base}`} />
-                {weatherActive && <BillRow label={`Weather Allowance (${weatherPct}%)`} value="Included" muted />}
-                {billing.distanceSurcharge > 0 && <BillRow label="Distance Surcharge" value={`₹${billing.distanceSurcharge}`} />}
-                <BillRow label="GST @ 18% (CGST 9% + SGST 9%)" value={`₹${billing.gst}`} />
-                <BillRow label="Cooperative Welfare Cess @ 2%" value={`₹${billing.welfareCess}`} />
+                <BillRow label={t('base_service_charge')} value={`₹${billing.base}`} />
+                {weatherActive && <BillRow label={t('weather_allowance', { pct: weatherPct })} value={t('included')} muted />}
+                {billing.distanceSurcharge > 0 && <BillRow label={t('distance_surcharge')} value={`₹${billing.distanceSurcharge}`} />}
+                <BillRow label={t('gst_line')} value={`₹${billing.gst}`} />
+                <BillRow label={t('welfare_cess')} value={`₹${billing.welfareCess}`} />
                 <View style={styles.billDivider} />
-                <BillRow label="Total Payable" value={`₹${billing.total}`} total />
+                <BillRow label={t('total_payable')} value={`₹${billing.total}`} total />
               </View>
-              <Text style={styles.billNote}>💡 Official Tax Invoice generated immediately on confirmation.</Text>
+              <Text style={styles.billNote}>{t('tax_invoice_note')}</Text>
             </View>
 
             <View style={{ marginTop: spacing.space4 }}>
@@ -779,14 +797,14 @@ export default function BookingScreen({ navigation, route }) {
         {step < 4 ? (
           <Pressable style={styles.ctaMain} onPress={() => setStep(step + 1)}>
             <Text style={styles.ctaMainText}>
-              {step === 1 ? 'Next: Describe' : step === 2 ? 'Next: Schedule' : 'Review & Pay'}
+              {step === 1 ? t('next_describe') : step === 2 ? t('next_schedule') : t('review_pay')}
             </Text>
             <ArrowRight size={18} color={colors.white} />
           </Pressable>
         ) : (
           <Pressable style={styles.ctaMain} onPress={handleConfirm}>
             <Check size={18} color={colors.white} />
-            <Text style={styles.ctaMainText}>Confirm Booking — ₹{billing.total}</Text>
+            <Text style={styles.ctaMainText}>{t('confirm_booking_amount', { amount: billing.total })}</Text>
           </Pressable>
         )}
       </View>
@@ -809,10 +827,17 @@ export default function BookingScreen({ navigation, route }) {
  */
 const CONFIRM_OTP = '4892'; // Existing frontend OTP value (unchanged; see file header).
 
-function BookingConfirmation({ booking, insetsTop, onTrack, onShare, onViewBookings }) {
+function BookingConfirmation({ booking: snapshot, insetsTop, onTrack, onShare, onViewBookings }) {
+  const { t } = useLanguage();
+  // Read the LIVE record so that if a worker accepts the job while this screen is still mounted,
+  // any re-render picks up the assigned professional instead of the stale creation-time snapshot.
+  const booking = getBookingById(snapshot.id) || snapshot;
+  // A professional only exists once a worker has accepted the job in the worker portal.
+  const isAssigned = !!booking.workerName;
   // Resolve the service's icon from EXISTING data: booking.serviceId -> mockServices.icon name
   // -> lucide component (via the existing serviceIcon registry). No new fields, no fake data.
   const svc = mockServices.find((s) => s.id === booking.serviceId);
+  const localizedServiceName = serviceName(svc || { id: booking.serviceId, name: booking.serviceName }, t);
   const ServiceIcon = serviceIcon(svc?.icon);
   const serviceColor = svc?.color || colors.primary600;
 
@@ -883,10 +908,8 @@ function BookingConfirmation({ booking, insetsTop, onTrack, onShare, onViewBooki
         </View>
 
         <Animated.View style={{ opacity: contentOpacity, transform: [{ translateY: contentShift }], alignItems: 'center' }}>
-          <Text style={styles.confirmedTitle}>Booking Confirmed! 🎉</Text>
-          <Text style={styles.confirmedSub}>
-            Your <Text style={styles.bold}>{booking.serviceName}</Text> service has been scheduled.
-          </Text>
+          <Text style={styles.confirmedTitle}>{t('booking_confirmed')}</Text>
+          <Text style={styles.confirmedSub}>{t('confirmed_sub', { service: localizedServiceName })}</Text>
         </Animated.View>
       </View>
 
@@ -899,21 +922,33 @@ function BookingConfirmation({ booking, insetsTop, onTrack, onShare, onViewBooki
               <ServiceIcon size={24} color={serviceColor} strokeWidth={2.2} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.svcName} numberOfLines={1}>{booking.serviceName}</Text>
-              <Text style={styles.svcSub}>Home Service</Text>
+              <Text style={styles.svcName} numberOfLines={1}>{localizedServiceName}</Text>
+              <Text style={styles.svcSub}>{t('home_service')}</Text>
             </View>
-            <View style={styles.statusBadge}>
-              <Check size={12} color={colors.success700} strokeWidth={3} />
-              <Text style={styles.statusText}>Scheduled</Text>
+            <View style={[styles.statusBadge, !isAssigned && styles.statusBadgePending]}>
+              {isAssigned ? (
+                <Check size={12} color={colors.success700} strokeWidth={3} />
+              ) : (
+                <Clock size={12} color={colors.warning700} strokeWidth={2.6} />
+              )}
+              <Text style={[styles.statusText, !isAssigned && styles.statusTextPending]}>
+                {isAssigned ? t('scheduled_badge') : t('awaiting_worker_badge')}
+              </Text>
             </View>
           </View>
 
           <View style={styles.detailsDivider} />
 
-          <DetailRow label="Booking ID" value={`#${booking.id}`} mono />
-          <DetailRow label="Professional" value={`${booking.workerName}  ★ ${booking.workerRating}`} />
-          <DetailRow label="Service Slot" value={`${booking.date} at ${booking.time}`} />
-          <DetailRow label="Total Paid" value={`₹${booking.totalPrice}`} hint="GST incl." accent last />
+          <DetailRow label={t('booking_id_label')} value={`#${booking.id}`} mono />
+          {/* Professional stays a placeholder until a worker accepts the job. */}
+          <DetailRow
+            label={t('professional_label')}
+            value={isAssigned ? `${booking.workerName}  ★ ${booking.workerRating}` : t('awaiting_worker')}
+            muted={!isAssigned}
+          />
+          <DetailRow label={t('service_slot')} value={`${booking.date} at ${booking.time}`} />
+          {/* Payment is collected AFTER the job is done — this is not a paid amount. */}
+          <DetailRow label={t('payment')} value={`₹${booking.totalPrice}`} hint={t('pay_after_completion')} accent last />
         </View>
 
         {/* ---- OTP card ---- */}
@@ -923,8 +958,8 @@ function BookingConfirmation({ booking, insetsTop, onTrack, onShare, onViewBooki
               <ShieldCheck size={18} color={colors.success700} strokeWidth={2.2} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.otpTitle}>Start-Service OTP</Text>
-              <Text style={styles.otpHint}>Share this OTP with the worker when they arrive.</Text>
+              <Text style={styles.otpTitle}>{t('start_service_otp')}</Text>
+              <Text style={styles.otpHint}>{t('otp_share_hint')}</Text>
             </View>
           </View>
           <View style={styles.otpValueRow}>
@@ -933,34 +968,43 @@ function BookingConfirmation({ booking, insetsTop, onTrack, onShare, onViewBooki
               {copied ? (
                 <>
                   <Check size={15} color={colors.success700} strokeWidth={3} />
-                  <Text style={styles.otpCopyText}>Copied</Text>
+                  <Text style={styles.otpCopyText}>{t('copied')}</Text>
                 </>
               ) : (
                 <>
                   <Copy size={15} color={colors.success700} strokeWidth={2.2} />
-                  <Text style={styles.otpCopyText}>Copy</Text>
+                  <Text style={styles.otpCopyText}>{t('copy')}</Text>
                 </>
               )}
             </PressableScale>
           </View>
         </View>
 
-        {/* ---- Primary CTA ---- */}
-        <PressableScale style={styles.primaryBtn} onPress={onTrack} accessibilityLabel="Track Worker Live">
-          <Navigation size={18} color={colors.white} strokeWidth={2.4} />
-          <Text style={styles.primaryBtnText}>Track Worker Live</Text>
-          <ArrowRight size={18} color={colors.white} strokeWidth={2.4} style={styles.primaryBtnArrow} />
-        </PressableScale>
+        {/* ---- Primary CTA — live tracking only exists once a worker has accepted ---- */}
+        {isAssigned ? (
+          <PressableScale style={styles.primaryBtn} onPress={onTrack} accessibilityLabel={t('track_worker_live')}>
+            <Navigation size={18} color={colors.white} strokeWidth={2.4} />
+            <Text style={styles.primaryBtnText}>{t('track_worker_live')}</Text>
+            <ArrowRight size={18} color={colors.white} strokeWidth={2.4} style={styles.primaryBtnArrow} />
+          </PressableScale>
+        ) : (
+          <View style={styles.awaitingCard}>
+            <View style={styles.awaitingIcon}>
+              <Clock size={17} color={colors.warning700} strokeWidth={2.3} />
+            </View>
+            <Text style={styles.awaitingText}>{t('tracking_after_accept')}</Text>
+          </View>
+        )}
 
         {/* ---- Secondary actions (two-column) ---- */}
         <View style={styles.secondaryRow}>
           <PressableScale style={[styles.secondaryBtn, styles.secondaryPrimary]} onPress={onShare} accessibilityLabel="Share Bill Receipt">
             <Printer size={17} color={colors.primary600} strokeWidth={2.2} />
-            <Text style={styles.secondaryPrimaryText}>Share Bill Receipt</Text>
+            <Text style={styles.secondaryPrimaryText}>{t('share_bill_receipt')}</Text>
           </PressableScale>
-          <PressableScale style={[styles.secondaryBtn, styles.secondaryNeutral]} onPress={onViewBookings} accessibilityLabel="View My Bookings">
+          <PressableScale style={[styles.secondaryBtn, styles.secondaryNeutral]} onPress={onViewBookings} accessibilityLabel={t('view_my_bookings')}>
             <ClipboardList size={17} color={colors.gray700} strokeWidth={2.2} />
-            <Text style={styles.secondaryNeutralText}>View My Bookings</Text>
+            <Text style={styles.secondaryNeutralText}>{t('view_my_bookings')}</Text>
           </PressableScale>
         </View>
 
@@ -970,9 +1014,9 @@ function BookingConfirmation({ booking, insetsTop, onTrack, onShare, onViewBooki
             <Home size={20} color={colors.primary600} strokeWidth={2.2} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.thanksTitle}>Thanks for choosing Sahakar Seva</Text>
+            <Text style={styles.thanksTitle}>{t('thanks_choosing')}</Text>
             <View style={styles.thanksSubRow}>
-              <Text style={styles.thanksSub}>Together we build stronger communities</Text>
+              <Text style={styles.thanksSub}>{t('together_communities')}</Text>
               <Heart size={13} color={colors.danger500} fill={colors.danger500} strokeWidth={0} />
             </View>
           </View>
@@ -1011,12 +1055,15 @@ function PressableScale({ children, style, onPress, accessibilityLabel }) {
 }
 
 /** DetailRow — a label/value row for the booking details card. */
-function DetailRow({ label, value, hint, mono, accent, last }) {
+function DetailRow({ label, value, hint, mono, accent, muted, last }) {
   return (
     <View style={[styles.detailRow, !last && styles.detailRowBorder]}>
       <Text style={styles.detailLabel}>{label}</Text>
       <View style={styles.detailValueWrap}>
-        <Text style={[styles.detailValue, mono && styles.mono, accent && styles.detailValueAccent]} numberOfLines={2}>
+        <Text
+          style={[styles.detailValue, mono && styles.mono, accent && styles.detailValueAccent, muted && styles.detailValueMuted]}
+          numberOfLines={2}
+        >
           {value}
         </Text>
         {hint && <Text style={styles.detailHint}>{hint}</Text>}
@@ -1076,18 +1123,6 @@ const styles = StyleSheet.create({
   trustItem: { flex: 1, alignItems: 'center', gap: 5 },
   trustIcon: { width: 40, height: 40, borderRadius: radii.radiusLg, alignItems: 'center', justifyContent: 'center' },
   trustLabel: { fontSize: 9.5, lineHeight: 12, color: colors.gray600, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, textAlign: 'center' },
-
-  searchRow: { flexDirection: 'row', gap: spacing.space2, marginBottom: spacing.space4 },
-  searchBox: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.space2,
-    paddingHorizontal: spacing.space3, height: 46, backgroundColor: colors.surfaceWhite,
-    borderRadius: radii.radiusLg, borderWidth: 1, borderColor: colors.gray200, ...shadows.shadowSm,
-  },
-  searchInput: { flex: 1, fontSize: fontSizes.fsSm, fontFamily: fontFamilies.interRegular, color: colors.gray900, padding: 0 },
-  filterBtn: {
-    width: 46, height: 46, borderRadius: radii.radiusLg, backgroundColor: colors.primary50,
-    borderWidth: 1, borderColor: colors.primary100, alignItems: 'center', justifyContent: 'center',
-  },
 
   svcGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: spacing.space3 },
   svcCard: {
@@ -1361,6 +1396,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.success50, borderWidth: 1, borderColor: '#a7f3d0', borderRadius: radii.radiusFull,
   },
   statusText: { fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, color: colors.success700 },
+  statusBadgePending: { backgroundColor: colors.warning50, borderColor: colors.warning200 },
+  statusTextPending: { color: colors.warning700 },
   detailsDivider: { height: 1, backgroundColor: colors.gray100, marginVertical: spacing.space4 },
 
   detailRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: spacing.space3, paddingVertical: spacing.space3 },
@@ -1369,6 +1406,7 @@ const styles = StyleSheet.create({
   detailValueWrap: { flexShrink: 1, alignItems: 'flex-end' },
   detailValue: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwSemibold, fontFamily: fontFamilies.interSemiBold, color: colors.gray900, textAlign: 'right' },
   detailValueAccent: { fontSize: fontSizes.fsLg, fontWeight: fontWeights.fwExtrabold, fontFamily: fontFamilies.interExtraBold, color: colors.primary700 },
+  detailValueMuted: { color: colors.gray400, fontFamily: fontFamilies.interMedium, fontWeight: fontWeights.fwMedium },
   detailHint: { fontSize: fontSizes.fsXs, color: colors.gray400, fontFamily: fontFamilies.interRegular, marginTop: 1 },
 
   mono: { fontFamily: 'monospace' },
@@ -1392,6 +1430,22 @@ const styles = StyleSheet.create({
     backgroundColor: colors.white, borderRadius: radii.radiusMd, borderWidth: 1, borderColor: '#a7f3d0',
   },
   otpCopyText: { fontSize: fontSizes.fsSm, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, color: colors.success700 },
+
+  // Awaiting-worker notice (replaces the track CTA until a worker accepts)
+  awaitingCard: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.space3,
+    width: '100%', marginTop: spacing.space5, padding: spacing.space4,
+    backgroundColor: colors.warning50, borderWidth: 1, borderColor: colors.warning200,
+    borderRadius: radii.radiusLg,
+  },
+  awaitingIcon: {
+    width: 34, height: 34, borderRadius: radii.radiusFull, backgroundColor: colors.warning100,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  awaitingText: {
+    flex: 1, fontSize: fontSizes.fsSm, color: colors.warning800,
+    fontFamily: fontFamilies.interMedium, lineHeight: 19,
+  },
 
   // Primary CTA
   primaryBtn: {

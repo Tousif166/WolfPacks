@@ -5,6 +5,7 @@ import {
   ChevronRight, Check, X as XIcon, Clock3, CircleDot,
 } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
+import { useLanguage } from '@context/LanguageContext';
 import { getBookingsByCustomer } from '@data/mockBookings';
 import { getServiceById } from '@data/mockServices';
 import { serviceIcon } from '@components/icons';
@@ -45,10 +46,10 @@ const statusStyle = (s) => STATUS_STYLE[s] || { bg: colors.gray100, fg: colors.g
 const ACTIVE_STATUSES = ['en-route', 'in-progress', 'assigned'];
 
 const FILTERS = [
-  { key: 'all', label: 'All' },
-  { key: 'active', label: 'Active' },
-  { key: 'completed', label: 'Completed' },
-  { key: 'cancelled', label: 'Cancelled' },
+  { key: 'all', labelKey: 'all' },
+  { key: 'active', labelKey: 'active_filter' },
+  { key: 'completed', labelKey: 'completed' },
+  { key: 'cancelled', labelKey: 'cancelled_filter' },
 ];
 
 function matchesFilter(booking, filter) {
@@ -59,6 +60,7 @@ function matchesFilter(booking, filter) {
 
 export default function BookingTrackerScreen({ navigation }) {
   const { user } = useAuth();
+  const { t } = useLanguage();
   const bookings = getBookingsByCustomer(user?.id);
   const [selectedId, setSelectedId] = useState(bookings[0]?.id || null);
   const [ratingValue, setRatingValue] = useState(0);
@@ -67,8 +69,8 @@ export default function BookingTrackerScreen({ navigation }) {
 
   useEffect(() => {
     if (videoCall !== 'connecting') return undefined;
-    const t = setTimeout(() => setVideoCall('connected'), 2200);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setVideoCall('connected'), 2200);
+    return () => clearTimeout(timer);
   }, [videoCall]);
 
   const selected = bookings.find((b) => b.id === selectedId) || null;
@@ -87,18 +89,18 @@ export default function BookingTrackerScreen({ navigation }) {
       <ScreenContainer>
         <View style={styles.headRow}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.h1}>My Bookings</Text>
-            <Text style={styles.sub}>0 bookings</Text>
+            <Text style={styles.h1}>{t('my_bookings')}</Text>
+            <Text style={styles.sub}>0 {t('bookings_lc')}</Text>
           </View>
           <Pressable style={styles.newBtn} onPress={() => navigation.navigate('CustomerBook')}>
             <Plus size={16} color={colors.white} />
-            <Text style={styles.newBtnText}>New</Text>
+            <Text style={styles.newBtnText}>{t('new_btn')}</Text>
           </Pressable>
         </View>
         <View style={styles.empty}>
-          <Text style={styles.emptyText}>You have no bookings yet.</Text>
+          <Text style={styles.emptyText}>{t('no_bookings_customer')}</Text>
           <Pressable style={styles.primaryBtn} onPress={() => navigation.navigate('CustomerBook')}>
-            <Text style={styles.primaryBtnText}>Book a Service</Text>
+            <Text style={styles.primaryBtnText}>{t('book_a_service')}</Text>
           </Pressable>
         </View>
       </ScreenContainer>
@@ -110,14 +112,14 @@ export default function BookingTrackerScreen({ navigation }) {
       {/* Header */}
       <View style={styles.headRow}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.h1}>My Bookings</Text>
+          <Text style={styles.h1}>{t('my_bookings')}</Text>
           <Text style={styles.sub}>
-            {bookings.length} booking{bookings.length !== 1 ? 's' : ''} · {activeCount} active
+            {t('bookings_active', { count: bookings.length, unit: bookings.length !== 1 ? t('bookings_lc') : t('booking_lc'), active: activeCount })}
           </Text>
         </View>
         <Pressable style={styles.newBtn} onPress={() => navigation.navigate('CustomerBook')}>
           <Plus size={16} color={colors.white} />
-          <Text style={styles.newBtnText}>New</Text>
+          <Text style={styles.newBtnText}>{t('new_btn')}</Text>
         </Pressable>
       </View>
 
@@ -128,7 +130,7 @@ export default function BookingTrackerScreen({ navigation }) {
           const count = filterCount(f.key);
           return (
             <Pressable key={f.key} style={[styles.filterPill, active && styles.filterPillActive]} onPress={() => setFilter(f.key)}>
-              <Text style={[styles.filterText, active && styles.filterTextActive]}>{f.label}</Text>
+              <Text style={[styles.filterText, active && styles.filterTextActive]}>{t(f.labelKey)}</Text>
               <View style={[styles.filterCount, active && styles.filterCountActive]}>
                 <Text style={[styles.filterCountText, active && styles.filterCountTextActive]}>{count}</Text>
               </View>
@@ -148,13 +150,13 @@ export default function BookingTrackerScreen({ navigation }) {
 
       {/* All bookings list */}
       <View style={styles.listHead}>
-        <Text style={styles.listTitle}>{filter === 'all' ? 'All Bookings' : `${FILTERS.find((f) => f.key === filter)?.label} Bookings`}</Text>
-        <Text style={styles.sortLabel}>Sort by: Latest</Text>
+        <Text style={styles.listTitle}>{filter === 'all' ? t('all_bookings') : t('filter_bookings', { filter: t(FILTERS.find((f) => f.key === filter)?.labelKey) })}</Text>
+        <Text style={styles.sortLabel}>{t('sort_latest')}</Text>
       </View>
 
       {visibleBookings.length === 0 ? (
         <View style={styles.filterEmpty}>
-          <Text style={styles.filterEmptyText}>No {filter} bookings.</Text>
+          <Text style={styles.filterEmptyText}>{t('no_filter_bookings', { filter: t(FILTERS.find((f) => f.key === filter)?.labelKey) })}</Text>
         </View>
       ) : (
         <View style={styles.list}>
@@ -174,7 +176,7 @@ export default function BookingTrackerScreen({ navigation }) {
       {/* Existing detail panel for the selected booking (unchanged functionality) */}
       {selected && (
         <View style={styles.detailCard}>
-          <Text style={styles.ref}>Booking Reference: #{selected.id}</Text>
+          <Text style={styles.ref}>{t('booking_reference', { id: selected.id })}</Text>
           <Text style={styles.detailTitle}>{selected.serviceName}</Text>
 
           <View style={styles.timelineWrap}>
@@ -188,7 +190,7 @@ export default function BookingTrackerScreen({ navigation }) {
               </View>
               <View style={styles.workerInfo}>
                 <Text style={styles.workerName}>{selected.workerName}</Text>
-                <StarRating rating={selected.workerRating || 4.8} size={14} />
+                {selected.workerRating != null ? <StarRating rating={selected.workerRating} size={14} /> : null}
                 {selected.fairnessPosition ? <FairnessBadge position={selected.fairnessPosition} /> : null}
               </View>
               <View style={styles.workerActions}>
@@ -209,39 +211,39 @@ export default function BookingTrackerScreen({ navigation }) {
           {canTrack && (
             <Pressable style={styles.trackBtn} onPress={() => navigation.navigate('LiveTrackingMap', { bookingId: selected.id })}>
               <Navigation size={18} color={colors.white} />
-              <Text style={styles.trackBtnText}>Track Worker Live on Map</Text>
+              <Text style={styles.trackBtnText}>{t('track_live_map')}</Text>
             </Pressable>
           )}
 
           <View style={styles.detailGrid}>
-            <Detail label="Date & Time" value={`${selected.date} • ${selected.time}`} />
-            <Detail label="Address" value={selected.address} />
-            <Detail label="Description" value={selected.description} />
-            <Detail label="Total (GST incl.)" value={`₹${selected.totalPrice}`} accent />
+            <Detail label={t('date_time')} value={`${selected.date} • ${selected.time}`} />
+            <Detail label={t('address_label')} value={selected.address} />
+            <Detail label={t('description_label')} value={selected.description} />
+            <Detail label={t('total_gst')} value={`₹${selected.totalPrice}`} accent />
             {selected.weatherCondition && selected.weatherCondition !== 'Clear' && (
-              <Detail label="Weather Adjustment" value={`${selected.weatherCondition} (×${selected.weatherMultiplier || 1.2})`} />
+              <Detail label={t('weather_adjustment')} value={`${selected.weatherCondition} (×${selected.weatherMultiplier || 1.2})`} />
             )}
           </View>
 
           <Pressable style={styles.receiptBtn} onPress={() => shareReceipt(selected)}>
             <Printer size={16} color={colors.primary600} />
-            <Text style={styles.receiptBtnText}>Share Bill Receipt</Text>
+            <Text style={styles.receiptBtnText}>{t('share_bill_receipt')}</Text>
           </Pressable>
 
           {selected.status === 'completed' && !selected.rating && (
             <View style={styles.ratingSection}>
-              <Text style={styles.ratingTitle}>Rate this service</Text>
+              <Text style={styles.ratingTitle}>{t('rate_service')}</Text>
               <StarRating rating={ratingValue} interactive onRate={setRatingValue} size={30} />
               {ratingValue > 0 && (
-                <Pressable style={styles.rateSubmit} onPress={() => Alert.alert('Thank you!', 'Thank you for rating your cooperative worker!')}>
-                  <Text style={styles.rateSubmitText}>Submit Rating</Text>
+                <Pressable style={styles.rateSubmit} onPress={() => Alert.alert(t('thank_you'), t('thank_you_rating'))}>
+                  <Text style={styles.rateSubmitText}>{t('submit_rating')}</Text>
                 </Pressable>
               )}
             </View>
           )}
           {selected.rating ? (
             <View style={styles.ratingSection}>
-              <Text style={styles.ratingTitle}>Your Rating</Text>
+              <Text style={styles.ratingTitle}>{t('your_rating_title')}</Text>
               <StarRating rating={selected.rating} size={24} />
             </View>
           ) : null}
@@ -255,24 +257,24 @@ export default function BookingTrackerScreen({ navigation }) {
             <View style={styles.vcAvatar}>
               <Text style={styles.vcAvatarText}>{selected?.workerName?.[0] || 'W'}</Text>
             </View>
-            <Text style={styles.vcName}>{selected?.workerName || 'Your Professional'}</Text>
+            <Text style={styles.vcName}>{selected?.workerName || t('your_professional')}</Text>
             {videoCall === 'connecting' ? (
               <>
                 <ActivityIndicator size="small" color={colors.primary600} style={{ marginVertical: spacing.space3 }} />
-                <Text style={styles.vcStatus}>Connecting secure video call…</Text>
+                <Text style={styles.vcStatus}>{t('connecting_video')}</Text>
               </>
             ) : (
               <>
                 <View style={styles.vcConnectedRow}>
                   <ShieldCheck size={16} color={colors.success600} />
-                  <Text style={styles.vcConnectedText}>Connected • End-to-end encrypted</Text>
+                  <Text style={styles.vcConnectedText}>{t('connected_encrypted')}</Text>
                 </View>
-                <Text style={styles.vcHint}>You're now on a live call with your cooperative worker.</Text>
+                <Text style={styles.vcHint}>{t('live_call_hint')}</Text>
               </>
             )}
             <Pressable style={styles.vcEndBtn} onPress={() => setVideoCall(null)}>
               <PhoneOff size={18} color={colors.white} />
-              <Text style={styles.vcEndText}>End Call</Text>
+              <Text style={styles.vcEndText}>{t('end_call')}</Text>
             </Pressable>
           </View>
         </View>
@@ -295,13 +297,14 @@ function StatusPill({ status }) {
 
 /** NEXT SERVICE highlight card (active booking). */
 function NextServiceCard({ booking, onOpen, onTrack }) {
+  const { t } = useLanguage();
   const svc = getServiceById(booking.serviceId);
   const Icon = serviceIcon(svc?.icon);
   const accent = svc?.color || colors.primary600;
   return (
     <Pressable style={nsStyles.card} onPress={onOpen}>
       <View style={nsStyles.kickerRow}>
-        <Text style={nsStyles.kicker}>NEXT SERVICE</Text>
+        <Text style={nsStyles.kicker}>{t('next_service')}</Text>
         <StatusPill status={booking.status} />
       </View>
       <View style={nsStyles.body}>
@@ -316,7 +319,7 @@ function NextServiceCard({ booking, onOpen, onTrack }) {
       </View>
       <Pressable style={nsStyles.trackBtn} onPress={onTrack}>
         <Navigation size={15} color={colors.white} strokeWidth={2.2} />
-        <Text style={nsStyles.trackText}>Track worker</Text>
+        <Text style={nsStyles.trackText}>{t('track_worker')}</Text>
         <ChevronRight size={15} color={colors.white} />
       </Pressable>
     </Pressable>
@@ -325,15 +328,16 @@ function NextServiceCard({ booking, onOpen, onTrack }) {
 
 /** Redesigned booking card with a per-card action mapped to an existing handler. */
 function BookingCard({ booking, selected, onPress, onTrack, onInvoice }) {
+  const { t } = useLanguage();
   const svc = getServiceById(booking.serviceId);
   const Icon = serviceIcon(svc?.icon);
   const accent = svc?.color || colors.primary600;
   const isActive = ACTIVE_STATUSES.includes(booking.status);
   const isCancelled = booking.status === 'cancelled';
 
-  let action = { label: 'View details', onPress };
-  if (booking.status === 'en-route') action = { label: 'Track worker', onPress: onTrack };
-  else if (booking.status === 'completed') action = { label: 'View invoice', onPress: onInvoice };
+  let action = { label: t('view_details_action'), onPress };
+  if (booking.status === 'en-route') action = { label: t('track_worker'), onPress: onTrack };
+  else if (booking.status === 'completed') action = { label: t('view_invoice_action'), onPress: onInvoice };
 
   return (
     <Pressable

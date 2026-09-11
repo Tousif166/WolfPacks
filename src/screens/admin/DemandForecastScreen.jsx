@@ -47,9 +47,9 @@ const FORECAST_DAYS = 7;
 
 // Urgency → refined status treatment (same three urgency values the engine produces).
 const STAFF_TONES = {
-  understaffed: { label: 'Understaffed', bg: '#fee2e2', fg: '#dc2626', softBg: '#fef2f2', textStrong: '#b91c1c' },
-  tight: { label: 'Tight', bg: '#fef3c7', fg: '#d97706', softBg: '#fffbeb', textStrong: '#b45309' },
-  covered: { label: 'Covered', bg: '#d1fae5', fg: '#059669', softBg: '#ecfdf5', textStrong: '#065f46' },
+  understaffed: { labelKey: 'understaffed', bg: '#fee2e2', fg: '#dc2626', softBg: '#fef2f2', textStrong: '#b91c1c' },
+  tight: { labelKey: 'tight', bg: '#fef3c7', fg: '#d97706', softBg: '#fffbeb', textStrong: '#b45309' },
+  covered: { labelKey: 'covered', bg: '#d1fae5', fg: '#059669', softBg: '#ecfdf5', textStrong: '#065f46' },
 };
 
 // Soft pastel icon-container tints per trade (purely visual).
@@ -102,7 +102,7 @@ export default function DemandForecastScreen() {
         share: Math.round(shareRatio * 100),
         pct: Math.round((demand / maxDemand) * 100),
         tone: level.tone,
-        label: level.label,
+        labelKey: level.labelKey,
         critical: level.critical,
       };
     });
@@ -152,8 +152,8 @@ export default function DemandForecastScreen() {
     <ScreenContainer contentStyle={{ paddingBottom: scrollPadBottom }}>
       {/* Premium in-content header (PortalHeader kept for its logout action + accent bell slot) */}
       <PortalHeader
-        title={t('demand_forecast_ai') || 'AI Demand Forecast'}
-        subtitle="Weighted MA + seasonality + weather"
+        title={t('demand_forecast_ai')}
+        subtitle={t('forecast_subtitle')}
         accent={colors.primary600}
       />
 
@@ -163,53 +163,53 @@ export default function DemandForecastScreen() {
         onPress={handleRegenerate}
         disabled={isGenerating}
         accessibilityRole="button"
-        accessibilityLabel="Regenerate forecast"
+        accessibilityLabel={t('regenerate_forecast')}
       >
         {isGenerating ? <ActivityIndicator size="small" color={colors.white} /> : <RefreshCw size={17} color={colors.white} strokeWidth={2.4} />}
         <View>
-          <Text style={styles.regenText}>{isGenerating ? 'Analyzing demand patterns…' : 'Regenerate Forecast'}</Text>
-          {!isGenerating && <Text style={styles.regenSub}>Get the latest AI peak forecast</Text>}
+          <Text style={styles.regenText}>{isGenerating ? t('analyzing_demand') : t('regenerate_forecast')}</Text>
+          {!isGenerating && <Text style={styles.regenSub}>{t('latest_forecast')}</Text>}
         </View>
       </Pressable>
 
       {/* Category selector */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.catRow}>
-        <CatChip label="All" emoji={null} icon={BarChart3} active={selectedCategory === 'all'} onPress={() => setSelectedCategory('all')} />
+        <CatChip label={t('all_categories')} emoji={null} icon={BarChart3} active={selectedCategory === 'all'} onPress={() => setSelectedCategory('all')} />
         {CATEGORIES.map((c) => (
-          <CatChip key={c.id} label={c.name} emoji={c.emoji} active={selectedCategory === c.id} onPress={() => setSelectedCategory(c.id)} />
+          <CatChip key={c.id} label={t(`svc_${c.id}`)} emoji={c.emoji} active={selectedCategory === c.id} onPress={() => setSelectedCategory(c.id)} />
         ))}
       </ScrollView>
 
       {isGenerating ? (
         <View style={styles.generatingBox}>
           <Brain size={30} color={colors.primary600} />
-          <Text style={styles.generatingTitle}>Analyzing demand patterns…</Text>
-          <Text style={styles.generatingSub}>Running the forecasting model with weather, seasonality, and festival data</Text>
+          <Text style={styles.generatingTitle}>{t('analyzing_demand')}</Text>
+          <Text style={styles.generatingSub}>{t('running_model')}</Text>
         </View>
       ) : (
         <>
           {/* Stats — 2x2 */}
           <View style={styles.statsGrid}>
-            <View style={styles.statCell}><StatsCard label="Avg. Daily Demand" value={avgPredicted} icon={TrendingUp} color="primary" /></View>
-            <View style={styles.statCell}><StatsCard label="Total (7 Days)" value={totalPredicted} icon={BarChart3} color="info" /></View>
-            <View style={styles.statCell}><StatsCard label="Peak Day" value={peakDay ? `${peakDay.dayName} (${peakDay.predicted})` : '—'} icon={Calendar} color="warning" /></View>
-            <View style={styles.statCell}><StatsCard label="Workers Online" value={workersOnline} icon={Users} color="success" /></View>
+            <View style={styles.statCell}><StatsCard label={t('avg_daily_demand')} value={avgPredicted} icon={TrendingUp} color="primary" /></View>
+            <View style={styles.statCell}><StatsCard label={t('total_7_days')} value={totalPredicted} icon={BarChart3} color="info" /></View>
+            <View style={styles.statCell}><StatsCard label={t('peak_day')} value={peakDay ? `${peakDay.dayName} (${peakDay.predicted})` : '—'} icon={Calendar} color="warning" /></View>
+            <View style={styles.statCell}><StatsCard label={t('workers_online')} value={workersOnline} icon={Users} color="success" /></View>
           </View>
 
           {/* Chart */}
           <View style={styles.chartCard}>
             <View style={styles.chartHeadRow}>
-              <Text style={styles.chartTitle}>Predicted Demand (Workers Needed)</Text>
+              <Text style={styles.chartTitle}>{t('predicted_demand_title')}</Text>
               {/* Passive descriptor of the real forecast window (FORECAST_DAYS), not a control. */}
               <View style={styles.rangePill}>
-                <Text style={styles.rangePillText}>{FORECAST_DAYS} Days</Text>
+                <Text style={styles.rangePillText}>{FORECAST_DAYS} {t('days')}</Text>
               </View>
             </View>
             <ForecastChart data={activeForecast} width={width - spacing.space4 * 2 - spacing.space4 * 2} />
             <View style={styles.legendRow}>
-              <Legend color={colors.primary600} label="Predicted" />
-              <Legend band label="Confidence" />
-              <Legend color={colors.accent500} label="Festival" />
+              <Legend color={colors.primary600} label={t('predicted')} />
+              <Legend band label={t('confidence')} />
+              <Legend color={colors.accent500} label={t('festival')} />
             </View>
           </View>
 
@@ -222,9 +222,9 @@ export default function DemandForecastScreen() {
               </View>
               <View style={styles.insightBody}>
                 <Text style={styles.insightHeadline}>
-                  Demand is expected to peak on <Text style={styles.insightHeadlineHi}>{peakDay.dayName} ({peakDay.predicted})</Text>.
+                  {t('demand_peak_on')} <Text style={styles.insightHeadlineHi}>{peakDay.dayName} ({peakDay.predicted})</Text>.
                 </Text>
-                <Text style={styles.insightSupport}>Consider allocating more workers.</Text>
+                <Text style={styles.insightSupport}>{t('allocate_more')}</Text>
               </View>
               {/* Minimal upward-trend bars — a purely decorative rising motif. */}
               <View style={styles.trendBars} accessible={false} importantForAccessibility="no-hide-descendants">
@@ -241,13 +241,13 @@ export default function DemandForecastScreen() {
               <View style={styles.breakdownHeadLeft}>
                 <View style={styles.breakdownTitleRow}>
                   <Calendar size={16} color={colors.gray700} />
-                  <Text style={styles.sectionTitle}>Daily Breakdown</Text>
+                  <Text style={styles.sectionTitle}>{t('daily_breakdown')}</Text>
                 </View>
-                <Text style={styles.breakdownSub}>Predicted demand with expected range</Text>
+                <Text style={styles.breakdownSub}>{t('predicted_range')}</Text>
               </View>
               {/* Passive descriptor of the real forecast window (FORECAST_DAYS) — not a control. */}
               <View style={styles.weekPill}>
-                <Text style={styles.weekPillText}>This Week</Text>
+                <Text style={styles.weekPillText}>{t('this_week')}</Text>
               </View>
             </View>
 
@@ -267,7 +267,7 @@ export default function DemandForecastScreen() {
                   <View style={styles.dayCenter}>
                     <View style={styles.dayStatusRow}>
                       <Text style={[styles.dayStatusText, { color: level.fg }]} numberOfLines={1}>
-                        {isPeak ? 'Highest demand' : level.label}
+                        {isPeak ? t('highest_demand') : t(level.labelKey)}
                       </Text>
                       {isPeak ? <Text style={styles.dayCrown}> 👑</Text> : null}
                       {day.festival ? (
@@ -305,12 +305,12 @@ export default function DemandForecastScreen() {
                 <Brain size={18} color={colors.primary600} strokeWidth={2.3} />
               </View>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={styles.staffHeaderTitle}>AI Staffing Recommendations</Text>
-                <Text style={styles.staffHeaderSub}>Based on current workload and demand</Text>
+                <Text style={styles.staffHeaderTitle}>{t('ai_staffing')}</Text>
+                <Text style={styles.staffHeaderSub}>{t('based_on_workload')}</Text>
               </View>
               <View style={styles.realtimePill}>
                 <View style={styles.realtimeDot} />
-                <Text style={styles.realtimeText}>Real-time</Text>
+                <Text style={styles.realtimeText}>{t('realtime')}</Text>
               </View>
             </View>
 
@@ -325,12 +325,12 @@ export default function DemandForecastScreen() {
                     <View style={[styles.staffIconBox, { backgroundColor: iconTint }]}>
                       <Text style={styles.staffEmoji}>{cat?.emoji || '📋'}</Text>
                     </View>
-                    <Text style={styles.staffNameV2} numberOfLines={1}>{rec.categoryName}</Text>
+                    <Text style={styles.staffNameV2} numberOfLines={1}>{t(`svc_${rec.category}`)}</Text>
                     <View style={[styles.staffPill, { backgroundColor: tone.bg }]}>
                       {rec.urgency === 'understaffed' ? (
                         <AlertTriangle size={11} color={tone.fg} strokeWidth={2.4} />
                       ) : null}
-                      <Text style={[styles.staffPillText, { color: tone.fg }]}>{tone.label}</Text>
+                      <Text style={[styles.staffPillText, { color: tone.fg }]}>{t(tone.labelKey)}</Text>
                     </View>
                   </View>
 
@@ -349,7 +349,7 @@ export default function DemandForecastScreen() {
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text style={[styles.recText, { color: tone.textStrong }]} numberOfLines={2}>{rec.message}</Text>
                       {rec.gap > 0 ? (
-                        <Text style={styles.recSub}>Need {rec.gap} more workers</Text>
+                        <Text style={styles.recSub}>{t('need_more_workers', { n: rec.gap })}</Text>
                       ) : null}
                     </View>
                     <ChevronRight size={16} color={tone.fg} />
@@ -365,9 +365,9 @@ export default function DemandForecastScreen() {
             <View style={styles.zoneHeadRow}>
               <View style={styles.sectionTitleRow}>
                 <MapPin size={16} color={colors.gray700} />
-                <Text style={styles.sectionTitle}>Zone-wise Demand</Text>
+                <Text style={styles.sectionTitle}>{t('zone_demand')}</Text>
               </View>
-              <Text style={styles.zoneTotal}>Total: {zoneTotal} Requests</Text>
+              <Text style={styles.zoneTotal}>{t('total_requests', { n: zoneTotal })}</Text>
             </View>
 
             {/* Prioritized, table-like rows (sorted descending). Share %, status label and the
@@ -384,14 +384,14 @@ export default function DemandForecastScreen() {
                     <Text style={styles.zoneNameV2} numberOfLines={1}>
                       {z.zone} <Text style={styles.zoneShare}>({z.share}%)</Text>
                     </Text>
-                    <Text style={styles.zoneCount} numberOfLines={1}>{z.demand} requests</Text>
+                    <Text style={styles.zoneCount} numberOfLines={1}>{z.demand} {t('requests_lc')}</Text>
                   </View>
 
                   {/* Column 3 — demand label (priority badge) over a colored progress bar */}
                   <View style={styles.zoneMetricCol}>
                     <View style={[styles.zoneBadge, { backgroundColor: z.tone.bg }]}>
                       {z.critical ? <AlertTriangle size={10} color={z.tone.fg} strokeWidth={2.6} /> : null}
-                      <Text style={[styles.zoneBadgeText, { color: z.tone.fg }]} numberOfLines={1}>{z.label}</Text>
+                      <Text style={[styles.zoneBadgeText, { color: z.tone.fg }]} numberOfLines={1}>{t(z.labelKey)}</Text>
                     </View>
                     <View style={styles.zoneBarTrackV2}>
                       <View style={[styles.zoneBarFillV2, { width: `${z.pct}%`, backgroundColor: z.tone.fg }]} />
@@ -509,9 +509,9 @@ function Legend({ color, band, label }) {
 function demandLevel(value, max, min) {
   const range = Math.max(max - min, 1);
   const t = (value - min) / range; // 0 (lowest) → 1 (highest)
-  if (t >= 0.78) return { label: 'High demand', fg: colors.danger500 };
-  if (t >= 0.4) return { label: 'Moderate demand', fg: colors.primary600 };
-  return { label: 'Lower demand', fg: colors.success600 };
+  if (t >= 0.78) return { labelKey: 'high_demand', fg: colors.danger500 };
+  if (t >= 0.4) return { labelKey: 'moderate_demand', fg: colors.primary600 };
+  return { labelKey: 'lower_demand', fg: colors.success600 };
 }
 
 /**
@@ -528,10 +528,10 @@ const ZONE_TONES = {
 };
 
 function zoneLevel(shareRatio) {
-  if (shareRatio >= 0.27) return { tone: ZONE_TONES.critical, label: 'Shortage Alert', critical: true };
-  if (shareRatio >= 0.2) return { tone: ZONE_TONES.moderate, label: 'Moderate Demand', critical: false };
-  if (shareRatio >= 0.15) return { tone: ZONE_TONES.normal, label: 'Normal Demand', critical: false };
-  return { tone: ZONE_TONES.low, label: 'Low Demand', critical: false };
+  if (shareRatio >= 0.27) return { tone: ZONE_TONES.critical, labelKey: 'shortage_alert', critical: true };
+  if (shareRatio >= 0.2) return { tone: ZONE_TONES.moderate, labelKey: 'moderate_demand_zone', critical: false };
+  if (shareRatio >= 0.15) return { tone: ZONE_TONES.normal, labelKey: 'normal_demand', critical: false };
+  return { tone: ZONE_TONES.low, labelKey: 'low_demand', critical: false };
 }
 
 const styles = StyleSheet.create({

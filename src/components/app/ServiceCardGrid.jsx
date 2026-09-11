@@ -1,5 +1,7 @@
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { serviceIcon } from '@components/icons';
+import { useLanguage } from '@context/LanguageContext';
+import { serviceName } from '@data/mockServices';
 import { spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
 
 /**
@@ -32,19 +34,21 @@ const SERVICE_PASTELS = {
 const POPULAR = new Set(['painting', 'carpentry', 'ac-repair', 'pest-control', 'appliance-repair']);
 
 export default function ServiceCardGrid({ services, onSelect }) {
+  const { t } = useLanguage();
   return (
     <View style={styles.grid}>
       {services.map((s) => {
         const Icon = serviceIcon(s.icon);
         const pastel = SERVICE_PASTELS[s.id] || SERVICE_PASTELS.default;
         const isPopular = POPULAR.has(s.id);
+        const label = serviceName(s, t);
         return (
           <Pressable
             key={s.id}
             style={({ pressed }) => [styles.card, { backgroundColor: pastel.fill }, pressed && styles.cardPressed]}
             onPress={() => onSelect?.(s)}
             accessibilityRole="button"
-            accessibilityLabel={`${s.name}, starts at ₹${s.basePrice}${isPopular ? ', popular' : ''}`}
+            accessibilityLabel={`${label}, ₹${s.basePrice}${isPopular ? ', popular' : ''}`}
           >
             <View style={styles.topRow}>
               {/* Top-left circular icon badge with a lighter tint of the pastel. */}
@@ -54,13 +58,13 @@ export default function ServiceCardGrid({ services, onSelect }) {
               {/* Top-right "Popular" pill on relevant services. */}
               {isPopular ? (
                 <View style={styles.popularPill}>
-                  <Text style={styles.popularText}>Popular</Text>
+                  <Text style={styles.popularText}>{t('popular')}</Text>
                 </View>
               ) : null}
             </View>
 
-            <Text style={styles.name} numberOfLines={2}>{s.name}</Text>
-            <Text style={styles.priceLabel}>Starts at</Text>
+            <Text style={styles.name} numberOfLines={2}>{label}</Text>
+            <Text style={styles.priceLabel}>{t('starts_at')}</Text>
             <Text style={styles.price}>₹{s.basePrice}</Text>
           </Pressable>
         );

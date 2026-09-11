@@ -4,7 +4,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { launchImageLibrary } from 'react-native-image-picker';
 import { Eye, EyeOff, User, Wrench, Upload, CheckCircle } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
+import { useLanguage } from '@context/LanguageContext';
 import { BrandLogo } from '@components/app';
+import LanguageToggle from '@components/ui/LanguageToggle';
+import MultiSelectField from '@components/ui/MultiSelectField';
+import { SKILL_OPTIONS, skillName, saveWorkerRegistration } from '@data/workerRegistration';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
 
 /**
@@ -35,6 +39,7 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
 
 export default function RegisterScreen({ navigation, route }) {
   const { register, loading } = useAuth();
+  const { t } = useLanguage();
   const insets = useSafeAreaInsets();
   const defaultRole = route?.params?.role || 'customer';
 
@@ -44,8 +49,10 @@ export default function RegisterScreen({ navigation, route }) {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
 
-  // Worker-specific
-  const [skills, setSkills] = useState('');
+  // Worker-specific. `skills` holds SERVICE IDS chosen from the dropdown (was a free-text
+  // comma-separated string) so they line up exactly with the categories customers book from.
+  const [skills, setSkills] = useState([]);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [certName, setCertName] = useState(null);
   const [hasCert, setHasCert] = useState(false);
   const [wantsTraining, setWantsTraining] = useState(false);
@@ -55,15 +62,20 @@ export default function RegisterScreen({ navigation, route }) {
   const handleSubmit = async () => {
     setError('');
     if (form.password !== form.confirmPw) {
-      setError('Passwords do not match.');
+      setError(t('passwords_no_match'));
       return;
     }
     if (form.password.length < 6) {
-      setError('Password must be at least 6 characters.');
+      setError(t('password_min'));
+      return;
+    }
+    // A worker with no skill selected could never be shown a job, so require at least one.
+    if (role === 'worker' && skills.length === 0) {
+      setError(t('select_skill_required'));
       return;
     }
     if (role === 'worker' && !hasCert && !wantsTraining) {
-      setError('Please upload an experience certificate OR enroll in our free offline training program.');
+      setError(t('cert_or_training'));
       return;
     }
 
@@ -75,13 +87,22 @@ export default function RegisterScreen({ navigation, route }) {
       phone: form.phone,
       city: form.city,
       state: form.state,
-      skills, // comma-separated string; trigger converts to text[]
+      // Still a comma-separated string of display names — the Supabase trigger that splits this
+      // into text[] is untouched. The dropdown only changed HOW the list is chosen.
+      skills: skills.map(skillName).join(', '),
       wantsTraining, // boolean; trigger sets worker_profiles.training_requested
     });
 
     if (!result.success) {
       setError(result.error);
       return;
+    }
+
+    // Persist the parts Supabase has no column for (certificate presence, training progress) and
+    // the skill IDs used for job-category filtering. Keyed by email because there may be no user
+    // id yet when email confirmation is pending. See src/data/workerRegistration.js.
+    if (role === 'worker') {
+      saveWorkerRegistration(form.email, { skills, hasCertificate: hasCert, certName, wantsTraining });
     }
     if (result.needsEmailConfirm) {
       setSuccess(true);
@@ -111,13 +132,10 @@ export default function RegisterScreen({ navigation, route }) {
       >
         <View style={[styles.card, styles.successCard]}>
           <Text style={styles.successEmoji}>📧</Text>
-          <Text style={styles.successTitle}>Almost there!</Text>
-          <Text style={styles.successBody}>
-            We've sent a confirmation email to <Text style={styles.successStrong}>{form.email}</Text>. Click the
-            link to activate your account.
-          </Text>
+          <Text style={styles.successTitle}>{t('almost_there')}</Text>
+          <Text style={styles.successBody}>{t('confirm_email_sent', { email: form.email })}</Text>
           <Pressable style={styles.submit} onPress={() => navigation.navigate('Login')}>
-            <Text style={styles.submitText}>Back to Login</Text>
+            <Text style={styles.submitText}>{t('back_to_login')}</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -131,6 +149,9 @@ export default function RegisterScreen({ navigation, route }) {
       keyboardShouldPersistTaps="handled"
     >
       <View style={styles.card}>
+        <View style={styles.langBar}>
+          <LanguageToggle size="sm" />
+        </View>
         <View style={styles.brand}>
           {/* EXACT existing app icon (native ic_launcher) with bundled @assets/logo.png fallback,
               replacing the previous text placeholder so the real Sahakar Seva logo is shown. */}
@@ -138,8 +159,8 @@ export default function RegisterScreen({ navigation, route }) {
             <BrandLogo style={styles.logo} accessibilityLabel="Sahakar Seva logo" />
           </View>
           <View style={styles.brandTextWrap}>
-            <Text style={styles.title}>सहकार सेवा</Text>
-            <Text style={styles.subtitle}>Create your account</Text>
+            <Text style={styles.title}>{t('brand_name')}</Text>
+            <Text style={styles.subtitle}>{t('create_account')}</Text>
           </View>
         </View>
 
@@ -147,11 +168,11 @@ export default function RegisterScreen({ navigation, route }) {
         <View style={styles.toggleWrap}>
           <Pressable style={[styles.toggle, role === 'customer' && styles.toggleActive]} onPress={() => setRole('customer')}>
             <User size={16} color={role === 'customer' ? colors.primary700 : colors.gray500} />
-            <Text style={[styles.toggleText, role === 'customer' && styles.toggleTextActive]}>Customer / ग्राहक</Text>
+            <Text style={[styles.toggleText, role === 'customer' && styles.toggleTextActive]}>{t('customer')}</Text>
           </Pressable>
           <Pressable style={[styles.toggle, role === 'worker' && styles.toggleActive]} onPress={() => setRole('worker')}>
             <Wrench size={16} color={role === 'worker' ? colors.primary700 : colors.gray500} />
-            <Text style={[styles.toggleText, role === 'worker' && styles.toggleTextActive]}>Worker / श्रमिक</Text>
+            <Text style={[styles.toggleText, role === 'worker' && styles.toggleTextActive]}>{t('worker')}</Text>
           </Pressable>
         </View>
 
@@ -162,14 +183,14 @@ export default function RegisterScreen({ navigation, route }) {
             </View>
           ) : null}
 
-          <Field label="Full Name" value={form.fullName} onChangeText={set('fullName')} placeholder="Your name" />
-          <Field label="Phone Number" value={form.phone} onChangeText={set('phone')} placeholder="+91 98765 43210" keyboardType="phone-pad" />
-          <Field label="Email Address" value={form.email} onChangeText={set('email')} placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none" />
-          <Field label="City" value={form.city} onChangeText={set('city')} placeholder="Your city" />
-          <Field label="State" value={form.state} onChangeText={set('state')} placeholder="State" />
+          <Field label={t('full_name')} value={form.fullName} onChangeText={set('fullName')} placeholder={t('your_name')} />
+          <Field label={t('phone_number')} value={form.phone} onChangeText={set('phone')} placeholder="+91 98765 43210" keyboardType="phone-pad" />
+          <Field label={t('email_address')} value={form.email} onChangeText={set('email')} placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none" />
+          <Field label={t('city')} value={form.city} onChangeText={set('city')} placeholder={t('your_city')} />
+          <Field label={t('state')} value={form.state} onChangeText={set('state')} placeholder={t('state')} />
 
           <View style={styles.field}>
-            <Text style={styles.fieldLabel}>Password</Text>
+            <Text style={styles.fieldLabel}>{t('password')}</Text>
             <View style={styles.pwWrap}>
               <TextInput
                 style={[styles.input, styles.pwInput]}
@@ -186,7 +207,7 @@ export default function RegisterScreen({ navigation, route }) {
           </View>
 
           <Field
-            label="Confirm Password"
+            label={t('confirm_password')}
             value={form.confirmPw}
             onChangeText={set('confirmPw')}
             placeholder="••••••••"
@@ -195,22 +216,30 @@ export default function RegisterScreen({ navigation, route }) {
 
           {role === 'worker' && (
             <View style={styles.workerSection}>
-              <Text style={styles.workerTitle}>Worker Registration Details</Text>
+              <Text style={styles.workerTitle}>{t('worker_reg_details')}</Text>
 
+              {/* Skills are picked from the portal's own service catalogue, so a worker can only
+                  hold a skill there are actually bookings for. Drives job-feed filtering. */}
               <View style={styles.field}>
-                <Text style={styles.fieldLabel}>Skills (comma-separated)</Text>
-                <TextInput
-                  style={styles.input}
+                <Text style={styles.fieldLabel}>{t('skills_label')}</Text>
+                <MultiSelectField
+                  open={skillsOpen}
+                  onOpen={() => setSkillsOpen(true)}
+                  onClose={() => setSkillsOpen(false)}
                   value={skills}
-                  onChangeText={setSkills}
-                  placeholder="e.g. Plumbing, Pipe Fitting, Electrical"
-                  placeholderTextColor={colors.gray400}
+                  onChange={setSkills}
+                  options={SKILL_OPTIONS}
+                  placeholder={t('skills_placeholder')}
+                  title={t('select_skills')}
+                  doneLabel={t('done')}
+                  emptyLabel={t('select_skill_required')}
                 />
+                <Text style={styles.fieldHint}>{t('skills_hint')}</Text>
               </View>
 
               <View>
                 <Text style={styles.certLabel}>
-                  Experience Certificate <Text style={styles.required}>*required</Text>
+                  {t('experience_cert')} <Text style={styles.required}>{t('required')}</Text>
                 </Text>
                 <Pressable style={[styles.uploadBtn, certName && styles.uploadBtnDone]} onPress={handlePickCert}>
                   {certName ? (
@@ -221,14 +250,14 @@ export default function RegisterScreen({ navigation, route }) {
                   ) : (
                     <>
                       <Upload size={16} color={colors.gray600} />
-                      <Text style={styles.uploadText}>Upload Certificate (PDF/JPG/PNG)</Text>
+                      <Text style={styles.uploadText}>{t('upload_cert')}</Text>
                     </>
                   )}
                 </Pressable>
 
                 <View style={styles.certOr}>
                   <View style={styles.certOrLine} />
-                  <Text style={styles.certOrText}>OR</Text>
+                  <Text style={styles.certOrText}>{t('or')}</Text>
                   <View style={styles.certOrLine} />
                 </View>
 
@@ -240,8 +269,7 @@ export default function RegisterScreen({ navigation, route }) {
                     {wantsTraining && <CheckCircle size={14} color={colors.white} />}
                   </View>
                   <Text style={styles.trainingText}>
-                    Enroll in <Text style={styles.trainingStrong}>Free Offline Training</Text> — Internship program for
-                    freshers
+                    {t('enroll_in')} <Text style={styles.trainingStrong}>{t('free_offline_training')}</Text> — {t('freshers_note')}
                   </Text>
                 </Pressable>
               </View>
@@ -252,14 +280,14 @@ export default function RegisterScreen({ navigation, route }) {
             {loading ? (
               <ActivityIndicator size="small" color={colors.white} />
             ) : (
-              <Text style={styles.submitText}>Register as {role === 'customer' ? 'ग्राहक (Customer)' : 'श्रमिक (Worker)'}</Text>
+              <Text style={styles.submitText}>{t('register_as', { role: role === 'customer' ? t('customer') : t('worker') })}</Text>
             )}
           </Pressable>
 
           <Text style={styles.switch}>
-            Already registered?{' '}
+            {t('already_registered')}{' '}
             <Text style={styles.switchLink} onPress={() => navigation.navigate('Login')}>
-              Sign In →
+              {t('sign_in')} →
             </Text>
           </Text>
         </View>
@@ -295,6 +323,10 @@ const styles = StyleSheet.create({
     maxWidth: 640,
     alignSelf: 'center',
     ...shadows.shadowXl,
+  },
+  langBar: {
+    alignSelf: 'flex-end',
+    marginBottom: spacing.space3,
   },
   successCard: {
     alignItems: 'center',
@@ -411,6 +443,12 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.fwMedium,
     fontFamily: fontFamilies.interMedium,
     color: colors.gray700,
+  },
+  fieldHint: {
+    fontSize: fontSizes.fsXs,
+    color: colors.gray500,
+    fontFamily: fontFamilies.interRegular,
+    marginTop: 2,
   },
   input: {
     paddingVertical: spacing.space3,

@@ -11,7 +11,7 @@ import { colors, spacing, fontSizes, fontWeights, fontFamilies } from '@theme';
  * This is an ORIGINAL composition using the app's own indigo brand, not a copy of any one app's
  * bar — the pattern is borrowed, the styling is ours.
  */
-export default function LocationBar({ label = 'Service location', city = 'Gurugram, Haryana', onPressBell, onPressLocation }) {
+export default function LocationBar({ label = 'Service location', city = 'Anandapur, Kolkata', onPressBell, onPressLocation }) {
   return (
     <View style={styles.row}>
       <Pressable style={styles.locWrap} onPress={onPressLocation} hitSlop={8}>

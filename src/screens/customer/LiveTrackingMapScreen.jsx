@@ -6,8 +6,9 @@ import {
   Phone, MessageCircle, Share2, ShieldCheck, Navigation, CheckCircle2, ArrowLeft,
   Route as RouteIcon, Bike, Home as HomeIcon, Pause, Play, RotateCcw, MapPin, Star,
 } from 'lucide-react-native';
-import { mockBookings } from '@data/mockBookings';
+import { mockBookings, DEFAULT_ADDRESS } from '@data/mockBookings';
 import { mockWorkers } from '@data/mockWorkers';
+import { useLanguage } from '@context/LanguageContext';
 import Badge from '@components/ui/Badge';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
 
@@ -19,17 +20,16 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  * real via haversine every tick. Preserved verbatim: booking/worker resolution, the route, the
  * simulation loop, camera modes, OTP, call/message/share handlers, replay/pause.
  *
- * MAP-RENDER DIAGNOSIS (frontend, task-scoped):
- *   - The frontend map component (react-native-maps MapView + Google provider) is correct and is
- *     the real, interactive map — NOT a placeholder. Markers/polylines/camera all work.
- *   - The blank/beige tile surface is caused OUTSIDE the frontend: the Android Google Maps SDK
- *     authenticates with android/app/src/main/AndroidManifest.xml's com.google.android.geo.API_KEY,
- *     which resolves (via react-native-config's dotenv.gradle) from GOOGLE_MAPS_API_KEY in .env.
- *     That value is still the placeholder "YOUR_GOOGLE_MAPS_API_KEY", so the SDK fails auth and
- *     draws no tiles. Supplying a valid, unrestricted-enough key + enabling "Maps SDK for Android"
- *     with billing in Google Cloud Console (then a native rebuild) makes real tiles appear. That is
- *     a credentials/config step and is intentionally NOT done here (no inventing keys, no backend
- *     changes). See MIGRATION_NOTES.md §6.2.
+ * MAP RENDERING:
+ *   - The frontend map component (react-native-maps MapView + Google provider) is the real,
+ *     interactive map — NOT a placeholder. Markers/polylines/camera all work.
+ *   - The Android Google Maps SDK authenticates with AndroidManifest.xml's
+ *     com.google.android.geo.API_KEY, which resolves (via react-native-config's dotenv.gradle)
+ *     from GOOGLE_MAPS_API_KEY in .env. A valid key IS now configured, so real tiles render.
+ *     (Historical note: while that value was the "YOUR_GOOGLE_MAPS_API_KEY" placeholder the SDK
+ *     failed auth and drew a blank/beige surface — if tiles ever disappear again, check the key,
+ *     that "Maps SDK for Android" is enabled, and that billing is active. See MIGRATION_NOTES.md
+ *     §6.2.)
  *
  *   NOTE on a prior "fix": dropping the Google provider does NOT switch Android to a keyless
  *   renderer — react-native-maps uses Google Maps on Android regardless — so it never helped the
@@ -41,16 +41,31 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  * and a polished floating bottom sheet. All values remain dynamic from the existing data.
  */
 
+/**
+ * Demo tracking route: Ruby General Hospital → Heritage Institute of Technology, Kolkata.
+ *
+ * Real-world endpoints, so the polyline lands on actual roads once a valid Maps API key is in
+ * place (see the MAP-RENDER DIAGNOSIS note above):
+ *   - Ruby General Hospital, Kasba Golpark, E. M. Bypass — 22.5135, 88.4030
+ *   - Heritage Institute of Technology, 994 Madurdaha, Chowbaga Road, Anandapur — 22.5165, 88.4182
+ * The intermediate waypoints trace E. M. Bypass east, then Anandapur Road, then Chowbaga Road
+ * north-east to the campus — the same shape as the reference Google Maps route (~1.6 km direct).
+ *
+ * Each step carries a translation KEY plus its proper nouns as params, so the sentence localises
+ * while road/landmark names stay as-is. `statusMsg` (raw English) was replaced by `statusKey` for
+ * this reason.
+ */
 const CUSTOMER_ROUTE = [
-  { lat: 28.4550, lng: 77.0220, statusMsg: 'Worker started from Cooperative Hub' },
-  { lat: 28.4580, lng: 77.0245, statusMsg: 'Worker is driving along Sector 14 Main Road' },
-  { lat: 28.4610, lng: 77.0270, statusMsg: 'Passing MG Road Junction • Normal traffic' },
-  { lat: 28.4645, lng: 77.0298, statusMsg: 'Worker is crossing Central Market' },
-  { lat: 28.4680, lng: 77.0325, statusMsg: 'Approaching your neighborhood (Block C)' },
-  { lat: 28.4715, lng: 77.0355, statusMsg: 'Worker is 500m away on Sahakar Marg' },
-  { lat: 28.4740, lng: 77.0375, statusMsg: 'Worker reached Society Main Gate' },
-  { lat: 28.4760, lng: 77.0385, statusMsg: 'Worker is entering your apartment building' },
-  { lat: 28.4770, lng: 77.0390, statusMsg: 'Worker has arrived at your doorstep!' },
+  { lat: 22.5135, lng: 88.4030, statusKey: 'track_msg_started', params: { place: 'Ruby General Hospital' } },
+  { lat: 22.5131, lng: 88.4056, statusKey: 'track_msg_driving', params: { road: 'E. M. Bypass' } },
+  { lat: 22.5124, lng: 88.4084, statusKey: 'track_msg_junction', params: { place: 'Kalikapur' } },
+  { lat: 22.5119, lng: 88.4110, statusKey: 'track_msg_crossing', params: { place: 'Anandapur Road' } },
+  { lat: 22.5120, lng: 88.4137, statusKey: 'track_msg_crossing', params: { place: 'Urbana, Anandapur' } },
+  { lat: 22.5131, lng: 88.4159, statusKey: 'track_msg_turning', params: { road: 'Chowbaga Road' } },
+  { lat: 22.5145, lng: 88.4172, statusKey: 'track_msg_near', params: { place: 'Madurdaha' } },
+  { lat: 22.5155, lng: 88.4178, statusKey: 'track_msg_gate', params: { place: 'Heritage Institute of Technology' } },
+  { lat: 22.5161, lng: 88.4180, statusKey: 'track_msg_entering', params: { place: 'Heritage Institute of Technology' } },
+  { lat: 22.51653, lng: 88.41821, statusKey: 'track_msg_arrived', params: { place: 'Heritage Institute of Technology' } },
 ];
 
 // Subtle premium map styling (honored by the default Google renderer on Android).
@@ -88,17 +103,21 @@ function interpolateRoute(points, stepsPerSegment = 35) {
       result.push({
         lat: p1.lat + (p2.lat - p1.lat) * t,
         lng: p1.lng + (p2.lng - p1.lng) * t,
-        statusMsg: p1.statusMsg,
+        statusKey: p1.statusKey,
+        params: p1.params,
         totalProgress: ((i * stepsPerSegment + s) / ((points.length - 1) * stepsPerSegment)) * 100,
       });
     }
   }
   const last = points[points.length - 1];
-  result.push({ lat: last.lat, lng: last.lng, statusMsg: last.statusMsg, totalProgress: 100 });
+  result.push({ lat: last.lat, lng: last.lng, statusKey: last.statusKey, params: last.params, totalProgress: 100 });
   return result;
 }
 
-const SPEED_M_PER_MIN = 366;
+// ~14 km/h — realistic two-wheeler speed through Anandapur/E. M. Bypass city traffic. Combined
+// with the ~1.6 km Ruby → Heritage leg this opens the tracker at "7 min", matching what Google
+// Maps quotes for the same drive.
+const SPEED_M_PER_MIN = 230;
 
 // Format meters -> dynamic "x.x km" / "xxx m" (presentation only; value stays dynamic).
 function formatDistance(meters) {
@@ -108,6 +127,7 @@ function formatDistance(meters) {
 
 export default function LiveTrackingMapScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
+  const { t } = useLanguage();
   const bookingId = route?.params?.bookingId;
 
   const mapRef = useRef(null);
@@ -119,7 +139,19 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
     mockBookings.find((b) => b.id === bookingId) ||
     mockBookings.find((b) => b.status === 'en-route') ||
     mockBookings[0];
-  const worker = mockWorkers.find((w) => w.id === booking?.workerId) || mockWorkers[0];
+
+  // The BOOKING is the source of truth for who accepted the job — it carries the accepting
+  // worker's name/phone/rating (set by acceptBooking). The mockWorkers record is only consulted
+  // for extra demo detail, and must NOT be used as a blanket fallback: a real (non-demo) worker
+  // has no mockWorkers entry, and falling back to mockWorkers[0] would display the wrong person.
+  const workerRecord = mockWorkers.find((w) => w.id === booking?.workerId);
+  const worker = {
+    ...(workerRecord || {}),
+    name: booking?.workerName || workerRecord?.name || 'Worker',
+    phone: booking?.workerPhone || workerRecord?.phone || '9876543210',
+    rating: booking?.workerRating ?? workerRecord?.rating ?? null,
+    cooperative: workerRecord?.cooperative || 'Sahakar Cooperative',
+  };
 
   const home = CUSTOMER_ROUTE[CUSTOMER_ROUTE.length - 1];
   const interpolatedRoute = useMemo(() => interpolateRoute(CUSTOMER_ROUTE, 35), []);
@@ -188,14 +220,16 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
 
   const callWorker = () => {
     const tel = (worker.phone || '9876543210').replace(/\s/g, '');
-    Linking.openURL(`tel:${tel}`).catch(() => Alert.alert('Unable to place call'));
+    Linking.openURL(`tel:${tel}`).catch(() => Alert.alert(t('unable_to_call')));
   };
 
+  // First frame only — onMapReady immediately calls fitOverview() to frame the whole route.
+  // Centred between Ruby General Hospital and the Heritage campus, Anandapur, Kolkata.
   const initialRegion = {
-    latitude: 28.4660,
-    longitude: 77.0305,
-    latitudeDelta: 0.03,
-    longitudeDelta: 0.03,
+    latitude: 22.5150,
+    longitude: 88.4106,
+    latitudeDelta: 0.02,
+    longitudeDelta: 0.02,
   };
 
   return (
@@ -239,24 +273,24 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
           <ArrowLeft size={20} color={colors.gray800} strokeWidth={2.2} />
         </Pressable>
         <View style={styles.topTitleWrap}>
-          <Text style={styles.topTitle} numberOfLines={1}>Track Your Professional</Text>
+          <Text style={styles.topTitle} numberOfLines={1}>{t('track_professional')}</Text>
           <Text style={styles.topSub} numberOfLines={1}>{booking?.serviceName} • #{booking?.id}</Text>
         </View>
-        <Badge variant={isArrived ? 'success' : 'primary'}>{isArrived ? 'Arrived ✓' : 'On the way'}</Badge>
+        <Badge variant={isArrived ? 'success' : 'primary'}>{isArrived ? t('arrived_check') : t('on_the_way')}</Badge>
       </View>
 
       {/* Live distance pill */}
       <View style={[styles.livePill, { top: insets.top + 72 }]}>
         <View style={styles.livePulseDot} />
-        <Text style={styles.livePillText}>{isArrived ? 'REACHED' : formatDistance(remainingDistanceMeters)}</Text>
+        <Text style={styles.livePillText}>{isArrived ? t('reached') : formatDistance(remainingDistanceMeters)}</Text>
       </View>
 
       {/* Compact icon map controls — anchored from the top (relative to the pill) so they always
           stay in the visible viewport on the right and are never covered by the bottom sheet. */}
       <View style={[styles.cameraControls, { top: insets.top + 130 }]}>
-        <CamBtn icon={RouteIcon} active={cameraMode === 'overview'} onPress={fitOverview} label="Route" />
-        <CamBtn icon={Bike} active={cameraMode === 'worker'} onPress={focusWorker} label="Worker" />
-        <CamBtn icon={HomeIcon} active={cameraMode === 'home'} onPress={focusHome} label="Home" />
+        <CamBtn icon={RouteIcon} active={cameraMode === 'overview'} onPress={fitOverview} label={t('route')} />
+        <CamBtn icon={Bike} active={cameraMode === 'worker'} onPress={focusWorker} label={t('worker')} />
+        <CamBtn icon={HomeIcon} active={cameraMode === 'home'} onPress={focusHome} label={t('home')} />
       </View>
 
       {/* Bottom sheet */}
@@ -268,27 +302,27 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
           <View style={[styles.statusIcon, isArrived ? styles.statusIconDone : styles.statusIconLive]}>
             {isArrived ? <CheckCircle2 size={18} color={colors.success600} /> : <Navigation size={16} color={colors.primary600} strokeWidth={2.4} />}
           </View>
-          <Text style={styles.statusText} numberOfLines={2}>{currentPoint.statusMsg}</Text>
+          <Text style={styles.statusText} numberOfLines={2}>{t(currentPoint.statusKey, currentPoint.params)}</Text>
         </View>
 
         {/* ETA + address + play/pause */}
         <View style={styles.etaRow}>
           <View style={styles.etaLeft}>
-            <Text style={styles.etaTime}>{isArrived ? 'Arrived!' : `${etaMinutes} min`}</Text>
+            <Text style={styles.etaTime}>{isArrived ? t('arrived_excl') : t('min_suffix', { n: etaMinutes })}</Text>
             <View style={styles.etaAddrRow}>
               <MapPin size={12} color={colors.gray400} strokeWidth={2} />
-              <Text style={styles.etaSub} numberOfLines={1}>{booking?.address || 'Green Valley Apts, Sector 14'}</Text>
+              <Text style={styles.etaSub} numberOfLines={1}>{booking?.address || DEFAULT_ADDRESS}</Text>
             </View>
           </View>
           {isArrived ? (
             <Pressable style={styles.playBtn} onPress={replay}>
               <RotateCcw size={14} color={colors.primary700} strokeWidth={2.2} />
-              <Text style={styles.playBtnText}>Replay</Text>
+              <Text style={styles.playBtnText}>{t('replay')}</Text>
             </Pressable>
           ) : (
             <Pressable style={styles.playBtn} onPress={() => setIsPlaying((p) => !p)}>
               {isPlaying ? <Pause size={14} color={colors.primary700} strokeWidth={2.2} /> : <Play size={14} color={colors.primary700} strokeWidth={2.2} />}
-              <Text style={styles.playBtnText}>{isPlaying ? 'Pause' : 'Play'}</Text>
+              <Text style={styles.playBtnText}>{isPlaying ? t('pause') : t('play')}</Text>
             </Pressable>
           )}
         </View>
@@ -304,8 +338,8 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
             <ShieldCheck size={18} color={colors.success700} strokeWidth={2.2} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.otpLabel}>Start-Service OTP</Text>
-            <Text style={styles.otpHint}>Share only when service begins</Text>
+            <Text style={styles.otpLabel}>{t('start_service_otp')}</Text>
+            <Text style={styles.otpHint}>{t('otp_hint')}</Text>
           </View>
           <Text style={styles.otpCode}>4892</Text>
         </View>
@@ -326,19 +360,19 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
 
         <View style={styles.actionRow}>
           <Pressable style={styles.actionBtn} onPress={callWorker}>
-            <Phone size={16} color={colors.primary600} strokeWidth={2.2} /><Text style={styles.actionText}>Call</Text>
+            <Phone size={16} color={colors.primary600} strokeWidth={2.2} /><Text style={styles.actionText}>{t('call')}</Text>
           </Pressable>
-          <Pressable style={styles.actionBtn} onPress={() => Alert.alert('Message', `Connecting with ${worker.name.split(' ')[0]}…`)}>
-            <MessageCircle size={16} color={colors.primary600} strokeWidth={2.2} /><Text style={styles.actionText}>Message</Text>
+          <Pressable style={styles.actionBtn} onPress={() => Alert.alert(t('message'), t('connecting_with', { name: worker.name.split(' ')[0] }))}>
+            <MessageCircle size={16} color={colors.primary600} strokeWidth={2.2} /><Text style={styles.actionText}>{t('message')}</Text>
           </Pressable>
-          <Pressable style={styles.actionBtn} onPress={() => Alert.alert('Share ETA', 'Live tracking link copied.')}>
-            <Share2 size={16} color={colors.primary600} strokeWidth={2.2} /><Text style={styles.actionText}>Share</Text>
+          <Pressable style={styles.actionBtn} onPress={() => Alert.alert(t('share_eta'), t('tracking_link_copied'))}>
+            <Share2 size={16} color={colors.primary600} strokeWidth={2.2} /><Text style={styles.actionText}>{t('share')}</Text>
           </Pressable>
         </View>
 
         <View style={styles.safetyTip}>
           <ShieldCheck size={13} color={colors.success600} strokeWidth={2.2} />
-          <Text style={styles.safetyText}>All workers are police-verified and health-screened by the cooperative.</Text>
+          <Text style={styles.safetyText}>{t('safety_tip')}</Text>
         </View>
       </View>
     </View>

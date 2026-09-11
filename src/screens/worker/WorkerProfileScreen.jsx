@@ -10,9 +10,13 @@ import {
   Star,
   BadgeCheck,
   Wrench,
+  Globe,
 } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
+import { useLanguage } from '@context/LanguageContext';
 import { ScreenContainer } from '@components/app';
+import LanguageToggle from '@components/ui/LanguageToggle';
+import { LANGUAGES } from '@data/translations';
 import AvatarPortrait from '@components/illustrations/AvatarPortrait';
 import { DEMO_WORKER_ID, demoMockWorker } from './workerData';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
@@ -45,7 +49,9 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  */
 export default function WorkerProfileScreen() {
   const { user, profile, workerProfile, logout } = useAuth();
+  const { resolvedLanguage, t } = useLanguage();
   const isDemo = user?.id === DEMO_WORKER_ID;
+  const langLabel = LANGUAGES.find((l) => l.code === resolvedLanguage)?.label || 'English';
 
   const displayName = isDemo ? demoMockWorker.name : profile?.full_name || user?.email || 'Worker';
   const displayEmail = isDemo ? demoMockWorker.email : user?.email || '—';
@@ -71,17 +77,15 @@ export default function WorkerProfileScreen() {
   return (
     <ScreenContainer contentStyle={styles.pageContent}>
       {/* ---- Header ---- */}
-      <Text style={styles.h1}>My Profile</Text>
-      <Text style={styles.h1Sub}>Manage your information and view your achievements</Text>
+      <Text style={styles.h1}>{t('my_profile')}</Text>
+      <Text style={styles.h1Sub}>{t('manage_account')}</Text>
 
       {!isDemo && !workerProfile && (
         <View style={styles.setupCard}>
           <AlertCircle size={18} color={colors.warning500} />
           <View style={{ flex: 1 }}>
-            <Text style={styles.setupTitle}>Profile setup pending</Text>
-            <Text style={styles.setupText}>
-              Your skills, certificates, and stats will appear here once your cooperative account is activated by an admin.
-            </Text>
+            <Text style={styles.setupTitle}>{t('setup_pending')}</Text>
+            <Text style={styles.setupText}>{t('setup_pending_desc')}</Text>
           </View>
         </View>
       )}
@@ -113,7 +117,7 @@ export default function WorkerProfileScreen() {
         {isVerified && (
           <View style={styles.verifyPill}>
             <BadgeCheck size={13} color={colors.success700} strokeWidth={2.4} />
-            <Text style={styles.verifyPillText}>Verified Worker</Text>
+            <Text style={styles.verifyPillText}>{t('verified_workers')}</Text>
           </View>
         )}
 
@@ -128,14 +132,14 @@ export default function WorkerProfileScreen() {
                 <Text style={styles.statValue}>{rating.toFixed(1)}</Text>
               </View>
             ) : (
-              <Text style={styles.statValueMuted}>Not rated</Text>
+              <Text style={styles.statValueMuted}>{t('not_rated')}</Text>
             )}
-            <Text style={styles.statLabel}>Rating</Text>
+            <Text style={styles.statLabel}>{t('rating')}</Text>
           </View>
           <View style={styles.statSep} />
           <View style={styles.statCell}>
             <Text style={styles.statValue}>{totalJobs}</Text>
-            <Text style={styles.statLabel}>Jobs completed</Text>
+            <Text style={styles.statLabel}>{t('jobs_completed')}</Text>
           </View>
         </View>
 
@@ -146,16 +150,34 @@ export default function WorkerProfileScreen() {
       </View>
 
       {/* ---- Personal Information ---- */}
-      <Text style={styles.sectionTitle}>Personal Information</Text>
+      <Text style={styles.sectionTitle}>{t('personal_information')}</Text>
       <View style={styles.card}>
-        <InfoItem icon={Mail} label="Email" value={displayEmail} />
-        <InfoItem icon={Phone} label="Phone" value={displayPhone} />
-        <InfoItem icon={Users} label="Cooperative" value={cooperative} />
-        <InfoItem icon={Calendar} label="Joined" value={joinDate} last />
+        <InfoItem icon={Mail} label={t('email')} value={displayEmail} />
+        <InfoItem icon={Phone} label={t('phone')} value={displayPhone} />
+        <InfoItem icon={Users} label={t('cooperative')} value={cooperative} />
+        <InfoItem icon={Calendar} label={t('joined')} value={joinDate} last />
+      </View>
+
+      {/* ---- Language (interactive — switches the app language app-wide) ---- */}
+      <Text style={styles.sectionTitle}>{t('language')}</Text>
+      <View style={styles.card}>
+        <View style={styles.langRowTop}>
+          <View style={styles.infoIcon}>
+            <Globe size={18} color={colors.accent600} strokeWidth={2.1} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.infoLabel}>{t('language_sub')}</Text>
+            <Text style={styles.infoValue}>{langLabel}</Text>
+          </View>
+        </View>
+        <View style={styles.langToggleWrap}>
+          {/* Same canonical control the customer profile and header use. */}
+          <LanguageToggle size="md" />
+        </View>
       </View>
 
       {/* ---- Skills ---- */}
-      <Text style={styles.sectionTitle}>Skills</Text>
+      <Text style={styles.sectionTitle}>{t('skills')}</Text>
       <View style={styles.card}>
         {skills.length > 0 ? (
           <View style={styles.chipRow}>
@@ -167,12 +189,12 @@ export default function WorkerProfileScreen() {
             ))}
           </View>
         ) : (
-          <Text style={styles.emptyText}>No skills listed yet. Skills will be added by your cooperative admin.</Text>
+          <Text style={styles.emptyText}>{t('no_skills')}</Text>
         )}
       </View>
 
       {/* ---- Certificates ---- */}
-      <Text style={styles.sectionTitle}>Certificates</Text>
+      <Text style={styles.sectionTitle}>{t('certificates')}</Text>
       <View style={styles.card}>
         {certificates.length > 0 ? (
           certificates.map((cert, i) => (
@@ -187,14 +209,14 @@ export default function WorkerProfileScreen() {
             </View>
           ))
         ) : (
-          <Text style={styles.emptyText}>No certificates yet. Complete training modules to earn certificates.</Text>
+          <Text style={styles.emptyText}>{t('no_certificates')}</Text>
         )}
       </View>
 
       {/* ---- Logout (subtle destructive) ---- */}
       <Pressable style={styles.logoutBtn} onPress={logout}>
         <LogOut size={16} color={colors.danger600} strokeWidth={2.2} />
-        <Text style={styles.logoutText}>Log Out</Text>
+        <Text style={styles.logoutText}>{t('log_out')}</Text>
       </Pressable>
     </ScreenContainer>
   );
@@ -314,6 +336,9 @@ const styles = StyleSheet.create({
   infoIcon: { width: 40, height: 40, borderRadius: radii.radiusMd, backgroundColor: colors.accent50, alignItems: 'center', justifyContent: 'center' },
   infoLabel: { fontSize: fontSizes.fsXs, color: colors.gray400, fontFamily: fontFamilies.interMedium },
   infoValue: { fontSize: fontSizes.fsSm, color: colors.gray900, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, marginTop: 1 },
+
+  langRowTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3, paddingBottom: spacing.space3, borderBottomWidth: 1, borderBottomColor: colors.gray100 },
+  langToggleWrap: { paddingTop: spacing.space3 },
 
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.space2 },
   chip: {

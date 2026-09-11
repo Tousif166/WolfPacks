@@ -1,5 +1,6 @@
 import { View, Text, StyleSheet } from 'react-native';
 import { useAuth } from '@context/AuthContext';
+import { useLanguage } from '@context/LanguageContext';
 import Button from '@components/ui/Button';
 import { colors, spacing, fontSizes, fontWeights, fontFamilies } from '@theme';
 
@@ -19,17 +20,15 @@ import { colors, spacing, fontSizes, fontWeights, fontFamilies } from '@theme';
  */
 export default function AccessDeniedScreen() {
   const { role, logout } = useAuth();
+  const { t } = useLanguage();
 
   return (
     <View style={styles.container}>
       <Text style={styles.lock}>🔒</Text>
-      <Text style={styles.title}>Admin access required</Text>
-      <Text style={styles.body}>
-        Your account (role: {role || 'unknown'}) does not have admin privileges. Please sign in with
-        a Supabase admin account that has role = 'admin' in the profiles table.
-      </Text>
+      <Text style={styles.title}>{t('admin_access_required')}</Text>
+      <Text style={styles.body}>{t('access_denied_body', { role: role || t('role_unknown') })}</Text>
       <Button variant="primary" onPress={logout} style={styles.button}>
-        Back to Login
+        {t('back_to_login')}
       </Button>
     </View>
   );

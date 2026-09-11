@@ -1,4 +1,5 @@
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
+import { useLanguage } from '@context/LanguageContext';
 import { colors, spacing, fontSizes, fontFamilies } from '@theme';
 
 /**
@@ -6,10 +7,11 @@ import { colors, spacing, fontSizes, fontFamilies } from '@theme';
  * Ports the loading spinner branch of the web ProtectedRoute.jsx ("Loading Sahakar Seva...").
  */
 export default function SplashScreen() {
+  const { t } = useLanguage();
   return (
     <View style={styles.container}>
       <ActivityIndicator size="large" color={colors.primary600} />
-      <Text style={styles.text}>Loading Sahakar Seva...</Text>
+      <Text style={styles.text}>{t('loading_brand')}</Text>
     </View>
   );
 }

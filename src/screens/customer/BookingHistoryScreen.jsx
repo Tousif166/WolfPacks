@@ -1,6 +1,7 @@
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { Clock, MapPin, CloudRain, Printer, ReceiptText, ClipboardList, UserRound } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
+import { useLanguage } from '@context/LanguageContext';
 import { getBookingsByCustomer } from '@data/mockBookings';
 import { shareReceipt } from '@utils/receipt';
 import { ScreenContainer } from '@components/app';
@@ -31,6 +32,7 @@ const statusVariant = {
 
 export default function BookingHistoryScreen() {
   const { user } = useAuth();
+  const { t } = useLanguage();
   const bookings = getBookingsByCustomer(user?.id);
 
   return (
@@ -41,10 +43,10 @@ export default function BookingHistoryScreen() {
           <View style={styles.titleIcon}>
             <ReceiptText size={20} color={colors.primary700} strokeWidth={2.2} />
           </View>
-          <Text style={styles.h1}>Booking & Invoice History</Text>
+          <Text style={styles.h1}>{t('booking_invoice_history')}</Text>
         </View>
         <Text style={styles.sub}>
-          {bookings.length} booking{bookings.length !== 1 ? 's' : ''} total · All backed by Sahakar Seva Cooperative
+          {t('bookings_total', { count: bookings.length, unit: bookings.length !== 1 ? t('bookings_lc') : t('booking_lc') })}
         </Text>
       </View>
 
@@ -54,8 +56,8 @@ export default function BookingHistoryScreen() {
           <View style={styles.emptyIcon}>
             <ClipboardList size={30} color={colors.primary400} strokeWidth={1.8} />
           </View>
-          <Text style={styles.emptyTitle}>No bookings yet</Text>
-          <Text style={styles.emptyText}>Your booking and invoice history will appear here once you book a service.</Text>
+          <Text style={styles.emptyTitle}>{t('no_bookings_yet')}</Text>
+          <Text style={styles.emptyText}>{t('history_appears_here')}</Text>
         </View>
       ) : (
         <View style={styles.list}>
@@ -66,7 +68,7 @@ export default function BookingHistoryScreen() {
                 <View style={styles.headerLeft}>
                   <Text style={styles.name}>{b.serviceName}</Text>
                   {/* 2. Booking id */}
-                  <Text style={styles.ref}>Booking #{b.id}</Text>
+                  <Text style={styles.ref}>{t('booking_ref', { id: b.id })}</Text>
                 </View>
                 <Badge variant={statusVariant[b.status] || 'default'}>{b.status.replace('-', ' ')}</Badge>
               </View>
@@ -82,7 +84,7 @@ export default function BookingHistoryScreen() {
                       <UserRound size={15} color={colors.primary700} strokeWidth={2.2} />
                     </View>
                     <Text style={styles.workerText} numberOfLines={1}>
-                      <Text style={styles.workerLabel}>Worker  </Text>
+                      <Text style={styles.workerLabel}>{t('worker_label')}  </Text>
                       <Text style={styles.bold}>{b.workerName}</Text>
                     </Text>
                   </View>
@@ -105,7 +107,7 @@ export default function BookingHistoryScreen() {
               {/* 7 + 8. Price + Receipt */}
               <View style={styles.footer}>
                 <View style={styles.priceWrap}>
-                  <Text style={styles.priceLabel}>Total paid</Text>
+                  <Text style={styles.priceLabel}>{t('total_paid')}</Text>
                   <View style={styles.priceLine}>
                     <Text style={styles.price}>₹{b.totalPrice}</Text>
                     {b.weatherCondition && b.weatherCondition !== 'Clear' ? (
@@ -123,14 +125,14 @@ export default function BookingHistoryScreen() {
                   accessibilityLabel="Share receipt"
                 >
                   <Printer size={14} color={colors.primary600} strokeWidth={2.2} />
-                  <Text style={styles.receiptText}>Receipt</Text>
+                  <Text style={styles.receiptText}>{t('receipt')}</Text>
                 </Pressable>
               </View>
 
               {/* Your rating (completed + rated only) */}
               {b.status === 'completed' && b.rating ? (
                 <View style={styles.ratingRow}>
-                  <Text style={styles.ratingLabel}>Your rating</Text>
+                  <Text style={styles.ratingLabel}>{t('your_rating')}</Text>
                   <StarRating rating={b.rating} size={15} />
                 </View>
               ) : null}

@@ -11,6 +11,7 @@ import {
   ChevronRight,
 } from 'lucide-react-native';
 import { mockComplaints } from '@data/mockComplaints';
+import { useLanguage } from '@context/LanguageContext';
 import { ScreenContainer } from '@components/app';
 import { SearchBar } from '@components/app';
 import Badge from '@components/ui/Badge';
@@ -40,18 +41,18 @@ const statusIcons = { open: AlertTriangle, 'in-review': Clock, 'in-progress': Cl
 
 // Refined per-status treatment (soft tint + accent). Keys match the real status values.
 const STATUS_TONE = {
-  open: { accent: colors.danger500, chipBg: '#fef2f2', chipFg: colors.danger600, iconBg: '#fef2f2', label: 'Open' },
-  'in-progress': { accent: colors.info500, chipBg: colors.info50, chipFg: colors.info700, iconBg: colors.info50, label: 'In progress' },
-  'in-review': { accent: colors.warning500, chipBg: colors.warning50, chipFg: colors.warning700, iconBg: colors.warning50, label: 'In review' },
-  resolved: { accent: colors.success500, chipBg: '#ecfdf5', chipFg: colors.success700, iconBg: '#ecfdf5', label: 'Resolved' },
+  open: { accent: colors.danger500, chipBg: '#fef2f2', chipFg: colors.danger600, iconBg: '#fef2f2', labelKey: 'status_open' },
+  'in-progress': { accent: colors.info500, chipBg: colors.info50, chipFg: colors.info700, iconBg: colors.info50, labelKey: 'status_in_progress' },
+  'in-review': { accent: colors.warning500, chipBg: colors.warning50, chipFg: colors.warning700, iconBg: colors.warning50, labelKey: 'status_in_review' },
+  resolved: { accent: colors.success500, chipBg: '#ecfdf5', chipFg: colors.success700, iconBg: '#ecfdf5', labelKey: 'status_resolved' },
 };
 const toneFor = (s) => STATUS_TONE[s] || STATUS_TONE.open;
 
 const FILTERS = [
-  { id: 'all', label: 'All' },
-  { id: 'open', label: 'Open' },
-  { id: 'in-progress', label: 'In Progress' },
-  { id: 'resolved', label: 'Resolved' },
+  { id: 'all', labelKey: 'all' },
+  { id: 'open', labelKey: 'status_open' },
+  { id: 'in-progress', labelKey: 'status_in_progress_filter' },
+  { id: 'resolved', labelKey: 'status_resolved' },
 ];
 
 function shortDate(iso) {
@@ -62,6 +63,7 @@ function shortDate(iso) {
 }
 
 export default function ComplaintsDashboardScreen() {
+  const { t } = useLanguage();
   const [complaints, setComplaints] = useState(mockComplaints);
   const [selected, setSelected] = useState(null);
   const [search, setSearch] = useState('');
@@ -96,9 +98,9 @@ export default function ComplaintsDashboardScreen() {
       {/* ---------------- Header ---------------- */}
       <View style={styles.headerRow}>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={styles.h1}>Complaints Dashboard</Text>
+          <Text style={styles.h1}>{t('complaints_dashboard')}</Text>
           <Text style={styles.sub}>
-            <Text style={styles.subStrong}>{openCount}</Text> open {openCount === 1 ? 'complaint' : 'complaints'}
+            <Text style={styles.subStrong}>{openCount}</Text> {t('open_complaints_count', { unit: openCount === 1 ? t('complaint_lc') : t('complaints_lc') })}
           </Text>
         </View>
         <View style={styles.headerBadge}>
@@ -109,7 +111,7 @@ export default function ComplaintsDashboardScreen() {
 
       {/* ---------------- Search ---------------- */}
       <View style={styles.searchWrap}>
-        <SearchBar placeholder="Search complaints…" value={search} onChangeText={setSearch} />
+        <SearchBar placeholder={t('search_complaints')} value={search} onChangeText={setSearch} />
       </View>
 
       {/* ---------------- Filter chips ---------------- */}
@@ -124,7 +126,7 @@ export default function ComplaintsDashboardScreen() {
               accessibilityRole="button"
               accessibilityState={{ selected: active }}
             >
-              <Text style={[styles.chipText, active ? styles.chipTextActive : styles.chipTextInactive]}>{f.label}</Text>
+              <Text style={[styles.chipText, active ? styles.chipTextActive : styles.chipTextInactive]}>{t(f.labelKey)}</Text>
             </Pressable>
           );
         })}
@@ -137,35 +139,35 @@ export default function ComplaintsDashboardScreen() {
         ))}
         {visible.length === 0 && (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyText}>No complaints match your search or filter.</Text>
+            <Text style={styles.emptyText}>{t('no_complaints_match')}</Text>
           </View>
         )}
       </View>
 
       {/* ---------------- Detail modal (unchanged behaviour) ---------------- */}
-      <Modal isOpen={!!selected} onClose={() => setSelected(null)} title="Complaint Details" size="lg">
+      <Modal isOpen={!!selected} onClose={() => setSelected(null)} title={t('complaint_details')} size="lg">
         {selected && (
           <View>
-            <Badge variant={statusVariant[selected.status] || 'default'}>{selected.status}</Badge>
+            <Badge variant={statusVariant[selected.status] || 'default'}>{t(toneFor(selected.status).labelKey)}</Badge>
             <Text style={styles.detailSubject}>{selected.subject}</Text>
             <View style={styles.detailGrid}>
-              <DetailRow label="Customer" value={selected.customerName} />
-              <DetailRow label="Worker" value={selected.workerName} />
-              <DetailRow label="Booking" value={selected.bookingId} />
-              <DetailRow label="Date" value={selected.createdAt?.split('T')[0]} />
+              <DetailRow label={t('customer_col')} value={selected.customerName} />
+              <DetailRow label={t('worker_col')} value={selected.workerName} />
+              <DetailRow label={t('booking_col')} value={selected.bookingId} />
+              <DetailRow label={t('date_col')} value={selected.createdAt?.split('T')[0]} />
             </View>
-            <Text style={styles.sectionLabel}>Description</Text>
+            <Text style={styles.sectionLabel}>{t('description_label')}</Text>
             <Text style={styles.detailBody}>{selected.description}</Text>
             {selected.resolution && (
               <>
-                <Text style={styles.sectionLabel}>Resolution</Text>
+                <Text style={styles.sectionLabel}>{t('resolution')}</Text>
                 <Text style={styles.detailBody}>{selected.resolution}</Text>
               </>
             )}
             {selected.status !== 'resolved' && (
               <Pressable style={styles.resolveBtn} onPress={() => handleResolve(selected.id)}>
                 <CheckCircle size={18} color={colors.white} />
-                <Text style={styles.resolveText}>Mark as Resolved</Text>
+                <Text style={styles.resolveText}>{t('mark_resolved')}</Text>
               </Pressable>
             )}
           </View>
@@ -180,6 +182,7 @@ export default function ComplaintsDashboardScreen() {
 /* ------------------------------------------------------------------ */
 
 function ComplaintCard({ complaint: c, onPress }) {
+  const { t } = useLanguage();
   const scale = useRef(new Animated.Value(1)).current;
   const to = (v) => Animated.spring(scale, { toValue: v, useNativeDriver: true, friction: 7, tension: 180 }).start();
   const tone = toneFor(c.status);
@@ -207,7 +210,7 @@ function ComplaintCard({ complaint: c, onPress }) {
           </View>
           <View style={[styles.statusChip, { backgroundColor: tone.chipBg }]}>
             <View style={[styles.statusChipDot, { backgroundColor: tone.accent }]} />
-            <Text style={[styles.statusChipText, { color: tone.chipFg }]} numberOfLines={1}>{tone.label}</Text>
+            <Text style={[styles.statusChipText, { color: tone.chipFg }]} numberOfLines={1}>{t(tone.labelKey)}</Text>
           </View>
         </View>
 
@@ -219,14 +222,14 @@ function ComplaintCard({ complaint: c, onPress }) {
           <View style={styles.metaItem}>
             <View style={styles.metaIcon}><Hash size={12} color={colors.primary600} strokeWidth={2.4} /></View>
             <View style={{ minWidth: 0 }}>
-              <Text style={styles.metaLabel}>Booking</Text>
+              <Text style={styles.metaLabel}>{t('booking_col')}</Text>
               <Text style={styles.metaValue} numberOfLines={1}>{c.bookingId}</Text>
             </View>
           </View>
           <View style={styles.metaItem}>
             <View style={styles.metaIcon}><Briefcase size={12} color={colors.primary600} strokeWidth={2.4} /></View>
             <View style={{ minWidth: 0 }}>
-              <Text style={styles.metaLabel}>Worker</Text>
+              <Text style={styles.metaLabel}>{t('worker_col')}</Text>
               <Text style={styles.metaValue} numberOfLines={1}>{c.workerName}</Text>
             </View>
           </View>
