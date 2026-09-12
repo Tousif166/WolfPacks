@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { View, Text, Pressable, Animated, StyleSheet } from 'react-native';
 import {
   AlertTriangle,
@@ -9,8 +9,17 @@ import {
   Briefcase,
   Hash,
   ChevronRight,
+  HardHat,
+  Star,
+  Sparkles,
 } from 'lucide-react-native';
-import { mockComplaints } from '@data/mockComplaints';
+import {
+  mockComplaints,
+  resolveComplaint,
+  useComplaints,
+  getWorkerFiledComplaints,
+} from '@data/mockComplaints';
+import { scheduleAdvisor } from '@services/complaintAdvisor';
 import { useLanguage } from '@context/LanguageContext';
 import { ScreenContainer } from '@components/app';
 import { SearchBar } from '@components/app';
@@ -48,6 +57,16 @@ const STATUS_TONE = {
 };
 const toneFor = (s) => STATUS_TONE[s] || STATUS_TONE.open;
 
+// Who filed it. A separate axis from status — see the directionFilter note in the component.
+const DIRECTION_FILTERS = [
+  { id: 'all', labelKey: 'direction_all' },
+  { id: 'customer', labelKey: 'direction_from_customers' },
+  { id: 'worker', labelKey: 'direction_from_workers' },
+];
+
+// LanguageContext stores a code; the AI service wants the English language NAME.
+const LANG_NAME = { en: 'English', hi: 'Hindi', bn: 'Bengali' };
+
 const FILTERS = [
   { id: 'all', labelKey: 'all' },
   { id: 'open', labelKey: 'status_open' },
@@ -63,14 +82,38 @@ function shortDate(iso) {
 }
 
 export default function ComplaintsDashboardScreen() {
-  const { t } = useLanguage();
-  const [complaints, setComplaints] = useState(mockComplaints);
+  const { t, resolvedLanguage } = useLanguage();
+  // Read straight from the persisted store rather than seeding local state, so complaints a
+  // customer files from the payment flow show up here, and resolving one survives a reload.
+  useComplaints();
+  const complaints = mockComplaints;
   const [selected, setSelected] = useState(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  /**
+   * Which DIRECTION of complaint to show. Complaints now run both ways — customers about workers,
+   * and workers about customers — and an admin adjudicating one is rarely interested in the other,
+   * so this is a separate axis from the status filter rather than more status chips.
+   */
+  const [directionFilter, setDirectionFilter] = useState('all');
+
+  const workerFiled = getWorkerFiledComplaints();
+  // A rating-only submission is not a grievance, so the "issues raised" count excludes it.
+  const workerIssues = workerFiled.filter((c) => c.priority !== 'low');
+  const avgWorkerRating = (() => {
+    const rated = workerFiled.filter((c) => typeof c.rating === 'number');
+    if (!rated.length) return null;
+    return rated.reduce((s, c) => s + c.rating, 0) / rated.length;
+  })();
+
+  // Generate any missing AI suggestions in the background so the admin sees them on the cards.
+  const awaitingAi = complaints.filter((c) => c.aiStatus === 'idle').length;
+  useEffect(() => {
+    if (awaitingAi > 0) scheduleAdvisor(LANG_NAME[resolvedLanguage] || 'English');
+  }, [awaitingAi, resolvedLanguage]);
 
   const handleResolve = (id) => {
-    setComplaints((prev) => prev.map((c) => (c.id === id ? { ...c, status: 'resolved' } : c)));
+    resolveComplaint(id);
     setSelected(null);
   };
 
@@ -81,6 +124,7 @@ export default function ComplaintsDashboardScreen() {
     const q = search.trim().toLowerCase();
     return complaints.filter((c) => {
       if (statusFilter !== 'all' && c.status !== statusFilter) return false;
+      if (directionFilter !== 'all' && c.filedBy !== directionFilter) return false;
       if (!q) return true;
       return (
         (c.subject || '').toLowerCase().includes(q) ||
@@ -91,7 +135,7 @@ export default function ComplaintsDashboardScreen() {
         (c.serviceName || '').toLowerCase().includes(q)
       );
     });
-  }, [complaints, search, statusFilter]);
+  }, [complaints, search, statusFilter, directionFilter]);
 
   return (
     <ScreenContainer contentStyle={styles.pageContent}>
@@ -112,6 +156,55 @@ export default function ComplaintsDashboardScreen() {
       {/* ---------------- Search ---------------- */}
       <View style={styles.searchWrap}>
         <SearchBar placeholder={t('search_complaints')} value={search} onChangeText={setSearch} />
+      </View>
+
+      {/* ---------------- Worker feedback summary ----------------
+          A dedicated read on the direction that did not exist before: what workers are reporting
+          about customers. Tapping it filters the list below to exactly those. */}
+      <Pressable
+        style={styles.wfCard}
+        onPress={() => setDirectionFilter(directionFilter === 'worker' ? 'all' : 'worker')}
+        accessibilityRole="button"
+      >
+        <View style={styles.wfIcon}>
+          <HardHat size={18} color={colors.accent700} strokeWidth={2.3} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.wfTitle}>{t('worker_feedback_section')}</Text>
+          <Text style={styles.wfSub}>
+            {t('worker_feedback_summary', {
+              total: workerFiled.length,
+              issues: workerIssues.length,
+            })}
+          </Text>
+        </View>
+        {avgWorkerRating != null && (
+          <View style={styles.wfRating}>
+            <Star size={12} color={colors.accent600} fill={colors.accent600} strokeWidth={2} />
+            <Text style={styles.wfRatingText}>{avgWorkerRating.toFixed(1)}</Text>
+          </View>
+        )}
+        <View style={[styles.wfChevron, directionFilter === 'worker' && styles.wfChevronActive]}>
+          <ChevronRight size={15} color={directionFilter === 'worker' ? colors.white : colors.accent700} strokeWidth={2.4} />
+        </View>
+      </Pressable>
+
+      {/* ---------------- Direction chips ---------------- */}
+      <View style={styles.chipsRow}>
+        {DIRECTION_FILTERS.map((f) => {
+          const active = directionFilter === f.id;
+          return (
+            <Pressable
+              key={f.id}
+              style={[styles.chip, active ? styles.dirChipActive : styles.chipInactive]}
+              onPress={() => setDirectionFilter(f.id)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+            >
+              <Text style={[styles.chipText, active ? styles.chipTextActive : styles.chipTextInactive]}>{t(f.labelKey)}</Text>
+            </Pressable>
+          );
+        })}
       </View>
 
       {/* ---------------- Filter chips ---------------- */}
@@ -158,6 +251,23 @@ export default function ComplaintsDashboardScreen() {
             </View>
             <Text style={styles.sectionLabel}>{t('description_label')}</Text>
             <Text style={styles.detailBody}>{selected.description}</Text>
+
+            {/* Groq's suggestion, generated in the background when the complaint was filed. */}
+            {selected.aiStatus === 'done' && selected.aiSuggestion ? (
+              <>
+                <Text style={styles.sectionLabel}>{t('ai_suggestion')}</Text>
+                <View style={styles.aiBox}>
+                  <View style={styles.aiHead}>
+                    <Sparkles size={13} color={colors.primary700} strokeWidth={2.4} />
+                    <Text style={styles.aiLabel}>{t('ai_generated')}</Text>
+                  </View>
+                  <Text style={styles.aiText}>{selected.aiSuggestion}</Text>
+                </View>
+              </>
+            ) : selected.aiStatus === 'idle' || selected.aiStatus === 'pending' ? (
+              <Text style={styles.aiPending}>{t('ai_suggestion_pending')}</Text>
+            ) : null}
+
             {selected.resolution && (
               <>
                 <Text style={styles.sectionLabel}>{t('resolution')}</Text>
@@ -207,6 +317,12 @@ function ComplaintCard({ complaint: c, onPress }) {
               <Calendar size={11} color={colors.gray400} strokeWidth={2.2} />
               <Text style={styles.byLine} numberOfLines={1}>{shortDate(c.createdAt)}</Text>
             </View>
+          </View>
+          {/* Direction badge, so an admin can tell at a glance who is complaining about whom. */}
+          <View style={[styles.dirBadge, c.filedBy === 'worker' ? styles.dirBadgeWorker : styles.dirBadgeCustomer]}>
+            <Text style={[styles.dirBadgeText, c.filedBy === 'worker' ? styles.dirBadgeTextWorker : styles.dirBadgeTextCustomer]}>
+              {t(c.filedBy === 'worker' ? 'badge_from_worker' : 'badge_from_customer')}
+            </Text>
           </View>
           <View style={[styles.statusChip, { backgroundColor: tone.chipBg }]}>
             <View style={[styles.statusChipDot, { backgroundColor: tone.accent }]} />
@@ -271,8 +387,55 @@ const styles = StyleSheet.create({
   /* Search */
   searchWrap: { marginTop: spacing.space4 },
 
+  /* Worker feedback summary */
+  wfCard: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.space3,
+    backgroundColor: colors.accent50, borderRadius: radii.radiusLg, padding: spacing.space3,
+    borderWidth: 1.5, borderColor: colors.accent200, marginTop: spacing.space4,
+  },
+  wfIcon: {
+    width: 36, height: 36, borderRadius: radii.radiusFull, backgroundColor: colors.accent100,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  wfTitle: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.accent800 },
+  wfSub: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interRegular, marginTop: 1 },
+  wfRating: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: colors.surfaceWhite, borderRadius: radii.radiusFull,
+    paddingVertical: 3, paddingHorizontal: spacing.space2,
+    borderWidth: 1, borderColor: colors.accent200,
+  },
+  wfRatingText: { fontSize: fontSizes.fsXs, color: colors.accent800, fontFamily: fontFamilies.interBold, fontWeight: fontWeights.fwBold },
+  wfChevron: {
+    width: 26, height: 26, borderRadius: radii.radiusFull, backgroundColor: colors.surfaceWhite,
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.accent200,
+  },
+  wfChevronActive: { backgroundColor: colors.accent600, borderColor: colors.accent600 },
+
+  /* Direction badge on a card */
+  dirBadge: { borderRadius: radii.radiusFull, paddingVertical: 3, paddingHorizontal: 7, borderWidth: 1 },
+  dirBadgeWorker: { backgroundColor: colors.accent50, borderColor: colors.accent200 },
+  dirBadgeCustomer: { backgroundColor: colors.info50, borderColor: colors.info100 || colors.gray200 },
+  dirBadgeText: { fontSize: 9, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, textTransform: 'uppercase', letterSpacing: 0.3 },
+  dirBadgeTextWorker: { color: colors.accent800 },
+  dirBadgeTextCustomer: { color: colors.info700 },
+
+  /* AI suggestion in the detail modal */
+  aiBox: {
+    backgroundColor: colors.primary50, borderRadius: radii.radiusMd, padding: spacing.space3,
+    borderWidth: 1, borderColor: colors.primary100, gap: 4,
+  },
+  aiHead: { flexDirection: 'row', alignItems: 'center', gap: spacing.space1 },
+  aiLabel: {
+    fontSize: 10, color: colors.primary700, fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold, textTransform: 'uppercase', letterSpacing: 0.5,
+  },
+  aiText: { fontSize: fontSizes.fsSm, color: colors.gray800, fontFamily: fontFamilies.interRegular, lineHeight: 20 },
+  aiPending: { fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular, fontStyle: 'italic', marginTop: spacing.space2 },
+
   /* Chips */
   chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.space2, marginTop: spacing.space3 },
+  dirChipActive: { backgroundColor: colors.accent600 },
   chip: { borderRadius: radii.radiusFull, paddingVertical: 7, paddingHorizontal: spacing.space3 },
   chipActive: { backgroundColor: colors.primary600 },
   chipInactive: { backgroundColor: colors.surfaceWhite, borderWidth: 1, borderColor: colors.gray200 },

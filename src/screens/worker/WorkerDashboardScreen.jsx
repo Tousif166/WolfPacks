@@ -1,16 +1,18 @@
 import { useState } from 'react';
-import { View, Text, Pressable, Image, StyleSheet } from 'react-native';
+import { View, Text, Pressable, Image, Alert, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Power, Star, Briefcase, IndianRupee, Clock, BookOpen,
   AlertTriangle, Award, Umbrella, MapPin, UserRound, CalendarClock, Bell, LogOut, Bike, Check,
-  GraduationCap, FileText, CheckCircle2,
+  GraduationCap, FileText, CheckCircle2, FileClock,
 } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
 import { getBookingsByWorker } from '@data/mockBookings';
 import { useWorkerStatus, setWorkerAvailability } from '@data/workerStatus';
 import { useWorkerRegistration, completeTraining, TRAINING_TOTAL_MODULES } from '@data/workerRegistration';
+import { useWorkerStats, acknowledgePayment, WEEKLY_HOUR_CAP } from '@data/workerStats';
+import { useBookings } from '@data/mockBookings';
 import { ScreenContainer, SectionHeader, GradientBand } from '@components/app';
 import Badge from '@components/ui/Badge';
 import ProgressRing from '@components/ui/ProgressRing';
@@ -42,6 +44,10 @@ export default function WorkerDashboardScreen({ navigation }) {
   const { t } = useLanguage();
   // Subscribes to the registration store so completing training updates this screen immediately.
   useWorkerRegistration(user?.email);
+  // Subscribes to earnings/hours/rating/score changes and to booking mutations, so a customer's
+  // payment reflects here without the worker having to navigate away and back.
+  useWorkerStats();
+  useBookings();
 
   const worker = buildWorkerData(user, profile, workerProfile);
 
@@ -49,6 +55,10 @@ export default function WorkerDashboardScreen({ navigation }) {
   // an experience certificate). `trainingBlocked` is what keeps job accepting locked until done.
   const training = worker.training;
   const trainingDone = training?.status === 'completed';
+
+  // While an uploaded certificate awaits admin review the dashboard collapses to a single notice —
+  // no availability toggle, no performance, benefits, active job or history.
+  const certificatePending = worker.certificatePending;
 
   const bookings = worker.mockWorkerId ? getBookingsByWorker(worker.mockWorkerId) : [];
   const activeBooking = bookings.find((b) => ['en-route', 'in-progress', 'assigned'].includes(b.status));
@@ -60,8 +70,11 @@ export default function WorkerDashboardScreen({ navigation }) {
     fallbackAvailable: worker.available,
     leaveRequests: worker.leaveRequests,
   });
-  // On approved leave the worker is out of the pool regardless of the toggle.
-  const isAvailable = available && !onLeave;
+  // Reaching the weekly hour ceiling takes the worker out of the pool for the rest of the week —
+  // the toggle locks, same as approved leave does.
+  const hourCapped = worker.hourCapped;
+  // On approved leave (or at the hour cap) the worker is out of the pool regardless of the toggle.
+  const isAvailable = available && !onLeave && !hourCapped;
   const [showHelpline, setShowHelpline] = useState(false);
 
   const isNearOvertime = (worker.weekly_hours_worked || 0) >= 36;
@@ -129,6 +142,51 @@ export default function WorkerDashboardScreen({ navigation }) {
               <Text style={styles.setupTitle}>{t('complete_profile')}</Text>
               <Text style={styles.setupText}>{t('complete_profile_desc')}</Text>
             </View>
+          </View>
+        )}
+
+        {/* Certificate under review — while this is showing, WorkerTabs has withheld every other
+            tab, so this card IS the worker's portal until an admin decides. */}
+        {certificatePending && (
+          <View style={styles.reviewCard}>
+            <View style={styles.reviewIcon}>
+              <FileClock size={22} color={colors.primary700} strokeWidth={2.2} />
+            </View>
+            <Text style={styles.reviewTitle}>{t('cert_under_review_title')}</Text>
+            <Text style={styles.reviewBody}>{t('cert_under_review_body')}</Text>
+            <View style={styles.reviewMetaBox}>
+              <Text style={styles.reviewMetaLabel}>{t('submitted_certificate')}</Text>
+              <Text style={styles.reviewMetaValue} numberOfLines={1}>{worker.certificate?.name || '—'}</Text>
+              <Text style={styles.reviewMetaLabel}>{t('claimed_skills_label')}</Text>
+              <Text style={styles.reviewMetaValue} numberOfLines={2}>{(worker.skills || []).join(', ') || '—'}</Text>
+            </View>
+            <Text style={styles.reviewLocked}>{t('features_locked_during_review')}</Text>
+          </View>
+        )}
+
+        {/* Payment received — parked by the customer's payment and dismissed once acknowledged, so
+            it is a one-time notice rather than a permanent banner. */}
+        {!certificatePending && worker.pendingPayment && (
+          <View style={styles.paidCard}>
+            <View style={styles.paidIcon}>
+              <IndianRupee size={18} color={colors.success700} strokeWidth={2.5} />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.paidTitle}>{t('you_have_been_paid')}</Text>
+              <Text style={styles.paidSub}>
+                {t('you_have_been_paid_sub', {
+                  amount: worker.pendingPayment.amount,
+                  id: worker.pendingPayment.bookingId || '—',
+                })}
+              </Text>
+            </View>
+            <Pressable
+              style={styles.paidDismiss}
+              onPress={() => acknowledgePayment(workerId)}
+              accessibilityLabel={t('dismiss')}
+            >
+              <Check size={16} color={colors.success700} strokeWidth={2.6} />
+            </Pressable>
           </View>
         )}
 
@@ -200,12 +258,15 @@ export default function WorkerDashboardScreen({ navigation }) {
           </View>
         )}
 
+        {/* Everything below is withheld while a certificate is under review. */}
+        {!certificatePending && (
+        <>
         {/* Availability */}
-        <View style={[styles.availCard, onLeave ? styles.availLeave : isAvailable ? styles.availOn : styles.availOff]}>
-          <View style={[styles.availIcon, onLeave ? styles.availIconLeave : isAvailable ? styles.availIconOn : styles.availIconOff]}>
+        <View style={[styles.availCard, (onLeave || hourCapped) ? styles.availLeave : isAvailable ? styles.availOn : styles.availOff]}>
+          <View style={[styles.availIcon, (onLeave || hourCapped) ? styles.availIconLeave : isAvailable ? styles.availIconOn : styles.availIconOff]}>
             <Power
               size={20}
-              color={onLeave ? colors.warning600 : isAvailable ? colors.success600 : colors.gray400}
+              color={(onLeave || hourCapped) ? colors.warning600 : isAvailable ? colors.success600 : colors.gray400}
               strokeWidth={2.2}
             />
           </View>
@@ -214,25 +275,33 @@ export default function WorkerDashboardScreen({ navigation }) {
               <View
                 style={[
                   styles.statusDot,
-                  { backgroundColor: onLeave ? colors.warning500 : isAvailable ? colors.success500 : colors.gray400 },
+                  { backgroundColor: (onLeave || hourCapped) ? colors.warning500 : isAvailable ? colors.success500 : colors.gray400 },
                 ]}
               />
               <Text style={styles.availTitle}>
-                {onLeave ? t('on_leave_caps') : isAvailable ? t('online') : t('offline')}
+                {hourCapped ? t('hours_capped_caps') : onLeave ? t('on_leave_caps') : isAvailable ? t('online') : t('offline')}
               </Text>
             </View>
             <Text style={styles.availSub}>
-              {onLeave ? t('on_leave_sub') : isAvailable ? t('accepting_jobs') : t('not_accepting_jobs')}
+              {hourCapped
+                ? t('hours_capped_sub', { cap: WEEKLY_HOUR_CAP })
+                : onLeave ? t('on_leave_sub') : isAvailable ? t('accepting_jobs') : t('not_accepting_jobs')}
             </Text>
           </View>
-          {/* While on approved leave the toggle is locked — going "online" must not put a worker on
-              leave back into the job pool. */}
+          {/* Locked while on approved leave OR at the weekly hour ceiling — going "online" must not
+              put a worker who is out of the pool back into it. */}
           <Pressable
-            style={[styles.toggle, isAvailable ? styles.toggleOn : styles.toggleOff, onLeave && styles.toggleLocked]}
-            onPress={() => setWorkerAvailability(workerId, !available)}
+            style={[styles.toggle, isAvailable ? styles.toggleOn : styles.toggleOff, (onLeave || hourCapped) && styles.toggleLocked]}
+            onPress={() => {
+              if (hourCapped) {
+                Alert.alert(t('hours_capped_caps'), t('cannot_go_online_until_next_week', { cap: WEEKLY_HOUR_CAP }));
+                return;
+              }
+              setWorkerAvailability(workerId, !available);
+            }}
             disabled={onLeave}
             accessibilityRole="switch"
-            accessibilityState={{ checked: isAvailable, disabled: onLeave }}
+            accessibilityState={{ checked: isAvailable, disabled: onLeave || hourCapped }}
             accessibilityLabel="Toggle availability"
           >
             <View style={[styles.knob, isAvailable ? styles.knobOn : styles.knobOff]} />
@@ -515,6 +584,8 @@ export default function WorkerDashboardScreen({ navigation }) {
             </View>
           )}
         </View>
+        </>
+        )}
 
         {/* Community brand message (presentation only) */}
         <View style={styles.communityStrip}>
@@ -563,6 +634,58 @@ const styles = StyleSheet.create({
   },
   setupTitle: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.gray900 },
   setupText: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interRegular, marginTop: 2 },
+
+  // ---- Certificate under review ----
+  reviewCard: {
+    backgroundColor: colors.surfaceWhite, borderRadius: radii.radiusXl, padding: spacing.space5,
+    borderWidth: 1.5, borderColor: colors.primary100, marginBottom: spacing.space4,
+    alignItems: 'center', gap: spacing.space3, ...shadows.shadowSm,
+  },
+  reviewIcon: {
+    width: 56, height: 56, borderRadius: radii.radiusFull, backgroundColor: colors.primary50,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  reviewTitle: {
+    fontSize: fontSizes.fsBase, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold,
+    color: colors.gray900, textAlign: 'center',
+  },
+  reviewBody: {
+    fontSize: fontSizes.fsSm, color: colors.gray600, fontFamily: fontFamilies.interRegular,
+    textAlign: 'center', lineHeight: 20,
+  },
+  reviewMetaBox: {
+    width: '100%', backgroundColor: colors.primary50, borderRadius: radii.radiusLg,
+    padding: spacing.space3, borderWidth: 1, borderColor: colors.primary100, gap: 2,
+  },
+  reviewMetaLabel: {
+    fontSize: 10, color: colors.primary700, fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold, textTransform: 'uppercase', letterSpacing: 0.5,
+  },
+  reviewMetaValue: {
+    fontSize: fontSizes.fsSm, color: colors.gray900, fontFamily: fontFamilies.interMedium,
+    marginBottom: spacing.space2,
+  },
+  reviewLocked: {
+    fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular,
+    textAlign: 'center', lineHeight: 16,
+  },
+
+  // ---- Payment received notice ----
+  paidCard: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.space3,
+    backgroundColor: colors.success50, borderRadius: radii.radiusXl, padding: spacing.space4,
+    borderWidth: 1.5, borderColor: colors.success100, marginBottom: spacing.space4, ...shadows.shadowSm,
+  },
+  paidIcon: {
+    width: 38, height: 38, borderRadius: radii.radiusFull, backgroundColor: colors.success100,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  paidTitle: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.success700 },
+  paidSub: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interRegular, marginTop: 2 },
+  paidDismiss: {
+    width: 32, height: 32, borderRadius: radii.radiusFull, backgroundColor: colors.surfaceWhite,
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.success100,
+  },
 
   // ---- Free offline training programme ----
   trainCard: {

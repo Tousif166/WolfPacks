@@ -74,7 +74,14 @@ Respond in the same language the user writes in (Hindi/Bengali/English). Be warm
  * Low-level Groq chat.completions call. Returns the assistant text on success or throws so the
  * public functions' try/catch can shape the error the same way geminiService did.
  */
-async function groqChat({ model, messages, temperature = 0.7, maxTokens = 1024 }) {
+/**
+ * `reasoningEffort` matters on gpt-oss models, which are REASONING models: they spend completion
+ * tokens on an internal `reasoning` field before emitting `content`. If max_completion_tokens runs
+ * out during that phase, the request succeeds with an EMPTY content string — no error, just nothing.
+ * Measured on this prompt: default effort burned 271 completion tokens (903 chars of reasoning)
+ * whereas 'low' produced equally good output in 76. Pass 'low' for short, factual generations.
+ */
+async function groqChat({ model, messages, temperature = 0.7, maxTokens = 1024, reasoningEffort = null }) {
   const res = await fetch(GROQ_URL, {
     method: 'POST',
     headers: {
@@ -86,6 +93,7 @@ async function groqChat({ model, messages, temperature = 0.7, maxTokens = 1024 }
       messages,
       temperature,
       max_completion_tokens: maxTokens,
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       stream: false,
     }),
   });
@@ -106,6 +114,11 @@ async function groqChat({ model, messages, temperature = 0.7, maxTokens = 1024 }
 
   const data = await res.json();
   const text = data?.choices?.[0]?.message?.content ?? '';
+  // An empty content with a non-empty reasoning field means the token budget was consumed before the
+  // answer was written. Treated as an error so callers fall back instead of showing a blank panel.
+  if (!text.trim() && data?.choices?.[0]?.message?.reasoning) {
+    throw new Error('Model returned no content (token budget consumed by reasoning; raise maxTokens or lower reasoningEffort).');
+  }
   return text;
 }
 
@@ -251,6 +264,78 @@ export async function getMaintenanceAdvice(serviceType, lastServiceDate, languag
     });
     return { text: stripMarkdown(text), error: null };
   } catch (err) {
+    return { text: null, error: err.message };
+  }
+}
+
+/**
+ * Generates a short, practical suggestion for handling a complaint.
+ *
+ * Called from a BACKGROUND worker (src/services/complaintAdvisor.js), never from render, so the UI
+ * never waits on the network. Same { text, error } contract and missing-key behaviour as the other
+ * functions here.
+ *
+ * The wording is role-aware because the same complaint needs different advice depending on who is
+ * reading it:
+ *   'accused' — the person complained about: what to do to put it right.
+ *   'admin'   — the cooperative: how to adjudicate and what action to consider.
+ *
+ * Deliberately constrained: low temperature and a tight token budget, because this text is shown
+ * verbatim next to a live dispute. It is also instructed not to assign blame or invent facts — an
+ * AI confidently siding with one party in a real complaint would be worse than no suggestion.
+ *
+ * @param {object} complaint  The complaint record (subject, description, direction, service).
+ * @param {'accused'|'admin'} audience  Who the suggestion is for.
+ * @param {string} language  Output language name, e.g. 'English', 'Hindi', 'Bengali'.
+ * @returns {Promise<{ text: string|null, error: string|null }>}
+ */
+export async function getComplaintSuggestion(complaint, audience = 'accused', language = 'English') {
+  if (!isConfigured) {
+    return { text: null, error: NOT_CONFIGURED_MESSAGE };
+  }
+  if (!complaint?.subject && !complaint?.description) {
+    return { text: null, error: 'Complaint has no subject or description to analyse.' };
+  }
+
+  const filedByWorker = complaint.filedBy === 'worker';
+  const complainant = filedByWorker ? 'the worker' : 'the customer';
+  const accused = filedByWorker ? 'the customer' : 'the worker';
+
+  const audienceInstruction = audience === 'admin'
+    ? `You are advising the cooperative's admin team, who must adjudicate fairly between ${complainant} and ${accused}. `
+      + 'Suggest what to verify first and one proportionate next step.'
+    : `You are advising ${accused}, who this complaint is about. `
+      + 'Suggest, kindly and without lecturing, how they can put this right and avoid a repeat.';
+
+  const promptText = [
+    'A complaint has been filed on a cooperative home-services platform in India.',
+    `Filed by: ${complainant}. About: ${accused}.`,
+    `Service: ${complaint.serviceName || 'home service'}.`,
+    `Subject: ${complaint.subject || '(none given)'}.`,
+    `Details: ${complaint.description || '(none given)'}.`,
+    '',
+    audienceInstruction,
+    '',
+    'Rules:',
+    '- Reply in 2 to 3 short sentences, under 60 words total.',
+    '- Do NOT decide who is at fault and do NOT invent details that are not stated above.',
+    '- Be specific and actionable, not generic platitudes.',
+    '- Plain text only, no markdown, no bullet points, no headings.',
+    `- Write in ${language}.`,
+  ].join('\n');
+
+  try {
+    const text = await groqChat({
+      model: TEXT_MODEL,
+      messages: [{ role: 'user', content: promptText }],
+      temperature: 0.4,
+      maxTokens: 400,
+      // Short factual advice needs no deep reasoning, and this keeps content from being starved.
+      reasoningEffort: 'low',
+    });
+    return { text: stripMarkdown(text), error: null };
+  } catch (err) {
+    console.error('Groq complaint-suggestion error:', err);
     return { text: null, error: err.message };
   }
 }

@@ -35,8 +35,9 @@ if (!isConfigured) {
   console.warn(
     '[supabase] SUPABASE_URL / SUPABASE_ANON_KEY are not set (check .env). ' +
       'Real auth and the admin worker list will not work until these are configured. ' +
-      'Demo accounts (demo.customer@sahakar.in / demo.worker@sahakar.in) still work — ' +
-      'they bypass Supabase entirely, see AuthContext.'
+      'Demo accounts still work — they bypass Supabase entirely (see AuthContext.DEMO_ACCOUNTS): ' +
+      'demo.customer@sahakar.in / demo.worker@sahakar.in / demo.admin@sahakar.in, password demo123. ' +
+      'Note the demo admin has no JWT, so the Supabase-registered worker roster stays empty for it.'
   );
 }
 

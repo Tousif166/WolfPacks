@@ -37,8 +37,44 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  * is baked in — all field rows stack vertically, matching the phone branch.
  */
 
+/**
+ * Plain-language sign-up failures.
+ *
+ * Same reasoning as friendlyAuthError in LoginScreen: Supabase's messages are written for
+ * developers. The signup-specific case worth naming is an email that is already registered, because
+ * the fix ("sign in instead") is different from every other failure.
+ */
+function friendlySignupError(rawError, t) {
+  const msg = String(rawError || '').toLowerCase();
+
+  if (
+    msg.includes('already registered') ||
+    msg.includes('already exists') ||
+    msg.includes('user already')
+  ) {
+    return t('signup_email_taken');
+  }
+  if (msg.includes('password')) {
+    return t('password_min');
+  }
+  if (msg.includes('invalid') && msg.includes('email')) {
+    return t('signup_email_invalid');
+  }
+  if (
+    msg.includes('network') ||
+    msg.includes('fetch') ||
+    msg.includes('timeout') ||
+    msg.includes('not configured')
+  ) {
+    return t('login_no_connection');
+  }
+  return t('signup_failed_generic');
+}
+
 export default function RegisterScreen({ navigation, route }) {
-  const { register, loading } = useAuth();
+  // `submitting`, not `loading`: `loading` swaps the navigator to the splash screen, which would
+  // unmount this form mid-submit and discard everything the user typed.
+  const { register, submitting } = useAuth();
   const { t } = useLanguage();
   const insets = useSafeAreaInsets();
   const defaultRole = route?.params?.role || 'customer';
@@ -94,7 +130,7 @@ export default function RegisterScreen({ navigation, route }) {
     });
 
     if (!result.success) {
-      setError(result.error);
+      setError(friendlySignupError(result.error, t));
       return;
     }
 
@@ -254,6 +290,10 @@ export default function RegisterScreen({ navigation, route }) {
                     </>
                   )}
                 </Pressable>
+                {/* An uploaded certificate goes to the cooperative admin for review — it does not
+                    make the worker job-ready on its own. Setting that expectation here avoids the
+                    worker signing up and wondering why they cannot accept anything yet. */}
+                {certName ? <Text style={styles.certReviewNote}>{t('cert_goes_for_review')}</Text> : null}
 
                 <View style={styles.certOr}>
                   <View style={styles.certOrLine} />
@@ -276,8 +316,8 @@ export default function RegisterScreen({ navigation, route }) {
             </View>
           )}
 
-          <Pressable style={[styles.submit, loading && styles.submitDisabled]} onPress={handleSubmit} disabled={loading}>
-            {loading ? (
+          <Pressable style={[styles.submit, submitting && styles.submitDisabled]} onPress={handleSubmit} disabled={submitting}>
+            {submitting ? (
               <ActivityIndicator size="small" color={colors.white} />
             ) : (
               <Text style={styles.submitText}>{t('register_as', { role: role === 'customer' ? t('customer') : t('worker') })}</Text>
@@ -449,6 +489,13 @@ const styles = StyleSheet.create({
     color: colors.gray500,
     fontFamily: fontFamilies.interRegular,
     marginTop: 2,
+  },
+  certReviewNote: {
+    fontSize: fontSizes.fsXs,
+    color: colors.warning800,
+    fontFamily: fontFamilies.interMedium,
+    marginTop: spacing.space2,
+    lineHeight: 16,
   },
   input: {
     paddingVertical: spacing.space3,

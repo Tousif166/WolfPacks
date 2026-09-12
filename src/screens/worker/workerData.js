@@ -3,9 +3,13 @@ import {
   getWorkerRegistration,
   registrationCertificates,
   isTrainingBlocked,
+  isCertificatePending,
+  isCertificateApproved,
+  isBanned,
   skillNames,
   toSkillIds,
 } from '@data/workerRegistration';
+import { applyStats } from '@data/workerStats';
 
 /**
  * Demo worker resolution — ported VERBATIM from web WorkerDashboard.jsx / WorkerProfile.jsx /
@@ -32,7 +36,7 @@ export const demoMockWorker = mockWorkers[0]; // Suresh Kumar
  *   training        — the training record, or null when not enrolled
  *   trainingBlocked — true while an enrolled programme is unfinished, which locks job accepting
  */
-function withRegistration(base, email) {
+function withRegistration(base, email, workerId) {
   const reg = getWorkerRegistration(email);
 
   // Skills chosen at registration win; otherwise fall back to whatever the account already had.
@@ -43,14 +47,38 @@ function withRegistration(base, email) {
   // additive — they never replace certificates the account already holds.
   const certificates = [...(base.certificates || []), ...registrationCertificates(reg)];
 
-  return {
-    ...base,
-    skills,
-    skillIds,
-    certificates,
-    training: reg?.training || null,
-    trainingBlocked: isTrainingBlocked(reg),
-  };
+  // Completed-job deltas (earnings, weekly hours, rating, quality score, hour cap) are layered on
+  // top of the account's seeded baseline. See src/data/workerStats.js.
+  return applyStats(
+    {
+      ...base,
+      skills,
+      skillIds,
+      certificates,
+      training: reg?.training || null,
+      trainingBlocked: isTrainingBlocked(reg),
+      // Certificate verification + ban state, used to gate the whole worker portal.
+      certificate: reg?.certificate || null,
+      certificatePending: isCertificatePending(reg),
+      banned: isBanned(reg),
+      banReason: reg?.banReason || null,
+      /**
+       * VERIFIED WORKER — the badge shown on the profile.
+       *
+       * Two routes earn it, matching the two routes to being employable:
+       *   - the admin approved the uploaded experience certificate, or
+       *   - the worker finished the free offline training and its certificate was issued.
+       *
+       * A worker declined as UNQUALIFIED therefore starts unverified and becomes verified on
+       * completing training — which is the point of that branch. A worker declined as FRAUDULENT is
+       * banned and never reaches this screen at all.
+       *
+       * `base.verified` is preserved so the seeded demo worker keeps its badge.
+       */
+      verified: !!base.verified || isCertificateApproved(reg) || !!reg?.training?.certificateIssued,
+    },
+    workerId,
+  );
 }
 
 /** Ported verbatim from WorkerDashboard.buildWorkerData — do not change the resolution rules. */
@@ -68,6 +96,7 @@ export function buildWorkerData(user, profile, workerProfile) {
       certificates: demoMockWorker.certificates,
       leaveRequests: demoMockWorker.leaveRequests,
       available: demoMockWorker.available,
+      verified: demoMockWorker.verified,
       totalJobs: demoMockWorker.totalJobs,
       earnings: demoMockWorker.earnings,
       rating: demoMockWorker.rating,
@@ -78,7 +107,7 @@ export function buildWorkerData(user, profile, workerProfile) {
       tier: workerProfile?.tier ?? 'tier2',
       leave_balance: workerProfile?.leave_balance ?? 28,
       loyalty_bonus_eligible: workerProfile?.loyalty_bonus_eligible ?? true,
-    }, user?.email);
+    }, user?.email, demoMockWorker.id);
   }
 
   // Real authenticated worker — ONLY use data from auth context.
@@ -94,6 +123,7 @@ export function buildWorkerData(user, profile, workerProfile) {
     certificates: workerProfile?.certificates || [],
     leaveRequests: [],
     available: workerProfile?.available ?? true,
+    verified: workerProfile?.verified ?? false,
     totalJobs: workerProfile?.total_jobs ?? 0,
     earnings: workerProfile?.earnings ?? 0,
     rating: workerProfile?.rating ?? null,
@@ -104,5 +134,5 @@ export function buildWorkerData(user, profile, workerProfile) {
     tier: workerProfile?.tier ?? 'tier2',
     leave_balance: workerProfile?.leave_balance ?? 0,
     loyalty_bonus_eligible: workerProfile?.loyalty_bonus_eligible ?? false,
-  }, user?.email);
+  }, user?.email, user?.id);
 }

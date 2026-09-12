@@ -2,11 +2,11 @@ import { useState, useEffect } from 'react';
 import { View, Text, Pressable, Linking, Alert, Modal, ActivityIndicator, StyleSheet } from 'react-native';
 import {
   Phone, Video, Navigation, Printer, Plus, PhoneOff, ShieldCheck,
-  ChevronRight, Check, X as XIcon, Clock3, CircleDot,
+  ChevronRight, Check, X as XIcon, Clock3, CircleDot, IndianRupee, ShieldAlert,
 } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
-import { getBookingsByCustomer } from '@data/mockBookings';
+import { getBookingsByCustomer, useBookings } from '@data/mockBookings';
 import { getServiceById } from '@data/mockServices';
 import { serviceIcon } from '@components/icons';
 import { shareReceipt } from '@utils/receipt';
@@ -45,6 +45,14 @@ const STATUS_STYLE = {
 const statusStyle = (s) => STATUS_STYLE[s] || { bg: colors.gray100, fg: colors.gray600, dot: colors.gray400, Icon: CircleDot };
 const ACTIVE_STATUSES = ['en-route', 'in-progress', 'assigned'];
 
+/**
+ * Live tracking only makes sense once the worker has actually set off. A job sitting at 'assigned'
+ * has been accepted but nobody is moving yet, so there is nothing to track — the button appears
+ * when the worker presses "Leave for job", which advances the booking to 'en-route'.
+ */
+const TRACKABLE_STATUSES = ['en-route', 'in-progress'];
+const isTrackable = (b) => !!b && TRACKABLE_STATUSES.includes(b.status);
+
 const FILTERS = [
   { key: 'all', labelKey: 'all' },
   { key: 'active', labelKey: 'active_filter' },
@@ -61,6 +69,9 @@ function matchesFilter(booking, filter) {
 export default function BookingTrackerScreen({ navigation }) {
   const { user } = useAuth();
   const { t } = useLanguage();
+  // Re-renders when the worker departs / arrives / completes, so tracking and the payment-due
+  // block appear without the customer having to navigate away and back.
+  useBookings();
   const bookings = getBookingsByCustomer(user?.id);
   const [selectedId, setSelectedId] = useState(bookings[0]?.id || null);
   const [ratingValue, setRatingValue] = useState(0);
@@ -74,7 +85,9 @@ export default function BookingTrackerScreen({ navigation }) {
   }, [videoCall]);
 
   const selected = bookings.find((b) => b.id === selectedId) || null;
-  const canTrack = selected && ACTIVE_STATUSES.includes(selected.status);
+  const canTrack = isTrackable(selected);
+  // Completed jobs the customer still owes for. Driven by the worker pressing "Job done".
+  const unpaid = bookings.filter((b) => b.status === 'completed' && b.paymentStatus === 'due');
 
   // Dynamic counts (frontend derivation over existing data).
   const activeCount = bookings.filter((b) => ACTIVE_STATUSES.includes(b.status)).length;
@@ -122,6 +135,15 @@ export default function BookingTrackerScreen({ navigation }) {
           <Text style={styles.newBtnText}>{t('new_btn')}</Text>
         </Pressable>
       </View>
+
+      {/* ---- Payment due: raised the moment the worker marks a job done ---- */}
+      {unpaid.map((b) => (
+        <PaymentDueCard
+          key={b.id}
+          booking={b}
+          onPay={() => navigation.navigate('PaymentPortal', { bookingId: b.id })}
+        />
+      ))}
 
       {/* Status filter pills (frontend filter over the loaded bookings) */}
       <View style={styles.filterRow}>
@@ -295,6 +317,40 @@ function StatusPill({ status }) {
   );
 }
 
+/**
+ * Payment due block — appears once the worker marks the job done and stays until paid. Carries the
+ * consequences-of-non-payment warning and the entry point into the payment portal.
+ */
+function PaymentDueCard({ booking, onPay }) {
+  const { t } = useLanguage();
+  return (
+    <View style={dueStyles.card}>
+      <View style={dueStyles.head}>
+        <View style={dueStyles.icon}>
+          <IndianRupee size={18} color={colors.danger700} strokeWidth={2.4} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={dueStyles.title}>{t('payment_due_title')}</Text>
+          <Text style={dueStyles.sub} numberOfLines={1}>
+            {booking.serviceName} · #{booking.id}
+          </Text>
+        </View>
+        <Text style={dueStyles.amount}>₹{booking.totalPrice}</Text>
+      </View>
+
+      <View style={dueStyles.warnBox}>
+        <ShieldAlert size={14} color={colors.danger700} strokeWidth={2.3} />
+        <Text style={dueStyles.warnText}>{t('payment_due_warning')}</Text>
+      </View>
+
+      <Pressable style={dueStyles.payBtn} onPress={onPay} accessibilityRole="button">
+        <Text style={dueStyles.payBtnText}>{t('pay_now')}</Text>
+        <ChevronRight size={16} color={colors.white} />
+      </Pressable>
+    </View>
+  );
+}
+
 /** NEXT SERVICE highlight card (active booking). */
 function NextServiceCard({ booking, onOpen, onTrack }) {
   const { t } = useLanguage();
@@ -317,11 +373,20 @@ function NextServiceCard({ booking, onOpen, onTrack }) {
           <Text style={nsStyles.meta} numberOfLines={1}>{booking.date} · ₹{booking.totalPrice}</Text>
         </View>
       </View>
-      <Pressable style={nsStyles.trackBtn} onPress={onTrack}>
-        <Navigation size={15} color={colors.white} strokeWidth={2.2} />
-        <Text style={nsStyles.trackText}>{t('track_worker')}</Text>
-        <ChevronRight size={15} color={colors.white} />
-      </Pressable>
+      {/* Tracking only once the worker is actually on the move; until then the card explains that
+          the job is accepted and the worker has yet to set off. */}
+      {isTrackable(booking) ? (
+        <Pressable style={nsStyles.trackBtn} onPress={onTrack}>
+          <Navigation size={15} color={colors.white} strokeWidth={2.2} />
+          <Text style={nsStyles.trackText}>{t('track_worker')}</Text>
+          <ChevronRight size={15} color={colors.white} />
+        </Pressable>
+      ) : (
+        <View style={nsStyles.waitBox}>
+          <Clock3 size={14} color={colors.gray500} strokeWidth={2.2} />
+          <Text style={nsStyles.waitText} numberOfLines={2}>{t('awaiting_worker_departure')}</Text>
+        </View>
+      )}
     </Pressable>
   );
 }
@@ -336,7 +401,7 @@ function BookingCard({ booking, selected, onPress, onTrack, onInvoice }) {
   const isCancelled = booking.status === 'cancelled';
 
   let action = { label: t('view_details_action'), onPress };
-  if (booking.status === 'en-route') action = { label: t('track_worker'), onPress: onTrack };
+  if (isTrackable(booking)) action = { label: t('track_worker'), onPress: onTrack };
   else if (booking.status === 'completed') action = { label: t('view_invoice_action'), onPress: onInvoice };
 
   return (
@@ -388,6 +453,33 @@ const pillStyles = StyleSheet.create({
   text: { fontSize: fontSizes.fsXs, fontWeight: fontWeights.fwSemibold, fontFamily: fontFamilies.interSemiBold, textTransform: 'capitalize' },
 });
 
+const dueStyles = StyleSheet.create({
+  card: {
+    backgroundColor: colors.danger50, borderRadius: radii.radiusXl, padding: spacing.space4,
+    borderWidth: 1.5, borderColor: colors.danger200, marginBottom: spacing.space4, gap: spacing.space3,
+  },
+  head: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3 },
+  icon: {
+    width: 38, height: 38, borderRadius: radii.radiusFull, backgroundColor: colors.danger100,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  title: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.danger700 },
+  sub: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interRegular, marginTop: 1 },
+  amount: { fontSize: fontSizes.fsLg, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.gray900 },
+  warnBox: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: spacing.space2,
+    backgroundColor: colors.surfaceWhite, borderRadius: radii.radiusMd,
+    paddingVertical: spacing.space2, paddingHorizontal: spacing.space3,
+    borderWidth: 1, borderColor: colors.danger100,
+  },
+  warnText: { flex: 1, fontSize: fontSizes.fsXs, color: colors.danger700, fontFamily: fontFamilies.interMedium, lineHeight: 16 },
+  payBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.space1,
+    backgroundColor: colors.danger600, borderRadius: radii.radiusMd, paddingVertical: spacing.space3,
+  },
+  payBtnText: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.white },
+});
+
 const nsStyles = StyleSheet.create({
   card: {
     backgroundColor: '#eef2ff', borderRadius: radii.radiusXl, padding: spacing.space4,
@@ -406,6 +498,13 @@ const nsStyles = StyleSheet.create({
     backgroundColor: colors.primary700, borderRadius: radii.radiusMd, paddingVertical: spacing.space3, marginTop: spacing.space4,
   },
   trackText: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.white },
+  waitBox: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.space2,
+    backgroundColor: colors.surfaceWhite, borderRadius: radii.radiusMd,
+    paddingVertical: spacing.space3, paddingHorizontal: spacing.space3, marginTop: spacing.space4,
+    borderWidth: 1, borderColor: colors.gray200,
+  },
+  waitText: { flex: 1, fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interMedium, lineHeight: 15 },
 });
 
 const cardStyles = StyleSheet.create({

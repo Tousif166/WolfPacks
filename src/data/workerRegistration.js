@@ -121,12 +121,29 @@ export function getWorkerRegistration(email) {
   return k ? records[k] || null : null;
 }
 
+/** A fresh training programme, used at sign-up and when a rejected worker is moved into training. */
+function newTrainingProgramme() {
+  return {
+    enrolled: true,
+    status: 'in-progress',
+    modulesDone: 0,
+    modulesTotal: TRAINING_TOTAL_MODULES,
+    enrolledAt: new Date().toISOString(),
+    completedAt: null,
+    certificateIssued: false,
+  };
+}
+
 /**
  * Writes the record captured at sign-up.
  *
- * `wantsTraining` only starts a programme when the worker did NOT upload a certificate — an
- * experienced worker with proof does not get put through the fresher internship, and must not be
- * blocked from taking jobs by it.
+ * An uploaded certificate no longer makes the worker job-ready on the spot — it is SUBMITTED FOR
+ * ADMIN VERIFICATION and sits at status 'pending' until a human reviews it. Anyone could otherwise
+ * upload any image and start taking jobs. Until it is approved the worker can log in but cannot
+ * work; see isCertificatePending / canWork below.
+ *
+ * `wantsTraining` only starts a programme when no certificate was uploaded — an experienced worker
+ * with proof does not get put through the fresher internship.
  */
 export function saveWorkerRegistration(email, { skills = [], hasCertificate = false, certName = null, wantsTraining = false } = {}) {
   const k = keyFor(email);
@@ -139,23 +156,104 @@ export function saveWorkerRegistration(email, { skills = [], hasCertificate = fa
     hasCertificate: !!hasCertificate,
     certName: certName || null,
     registeredAt: new Date().toISOString(),
-    training: enrolled
+    // Present only when a certificate was uploaded; drives the admin review queue.
+    certificate: hasCertificate
       ? {
-          enrolled: true,
-          status: 'in-progress',
-          modulesDone: 0,
-          modulesTotal: TRAINING_TOTAL_MODULES,
-          enrolledAt: new Date().toISOString(),
-          completedAt: null,
-          certificateIssued: false,
+          status: 'pending',
+          name: certName || 'Experience Certificate',
+          uploadedAt: new Date().toISOString(),
+          reviewedAt: null,
+          reason: null,
         }
       : null,
+    banned: false,
+    banReason: null,
+    training: enrolled ? newTrainingProgramme() : null,
   };
 
   records = { ...records, [k]: record };
   persist();
   emit();
   return record;
+}
+
+// ---------------------------------------------------------------------------
+// Admin certificate verification
+// ---------------------------------------------------------------------------
+
+/** Why a certificate was declined. Drives two very different outcomes — see below. */
+export const REJECT_FAKE = 'fake';
+export const REJECT_UNQUALIFIED = 'unqualified';
+
+/** Every uploaded certificate still awaiting a decision — the admin review queue. */
+export function getPendingCertificates() {
+  return Object.values(records)
+    .filter((r) => r?.certificate?.status === 'pending')
+    .sort((a, b) => (a.certificate.uploadedAt < b.certificate.uploadedAt ? -1 : 1));
+}
+
+/** Count for the admin dashboard badge. */
+export function getPendingCertificateCount() {
+  return getPendingCertificates().length;
+}
+
+function update(email, patch) {
+  const k = keyFor(email);
+  const existing = k && records[k];
+  if (!existing) return null;
+  records = { ...records, [k]: { ...existing, ...patch } };
+  persist();
+  emit();
+  return records[k];
+}
+
+/**
+ * Certificate accepted: the worker becomes a verified professional in the skills they registered
+ * for, the certificate is attached to their profile, and they can take jobs like any other worker.
+ */
+export function approveCertificate(email) {
+  const existing = getWorkerRegistration(email);
+  if (!existing?.certificate) return null;
+  return update(email, {
+    certificate: { ...existing.certificate, status: 'approved', reviewedAt: new Date().toISOString(), reason: null },
+    verified: true,
+  });
+}
+
+/**
+ * Certificate declined as FRAUDULENT: the account is banned. The worker keeps no access — the
+ * portal collapses to a logout screen and any future login is refused with the reason. This is
+ * deliberately the harshest branch, which is why the admin UI confirms before calling it.
+ */
+export function rejectCertificateAsFake(email) {
+  const existing = getWorkerRegistration(email);
+  if (!existing?.certificate) return null;
+  return update(email, {
+    certificate: { ...existing.certificate, status: 'rejected', reviewedAt: new Date().toISOString(), reason: REJECT_FAKE },
+    banned: true,
+    banReason: REJECT_FAKE,
+    verified: false,
+  });
+}
+
+/**
+ * Certificate declined as INSUFFICIENT for the trade: no ban. The account is moved into the free
+ * offline training programme instead, which is the same state a fresher who opted into training at
+ * sign-up is in — so the existing training dashboard, progress bar and completion flow all apply
+ * unchanged, and the worker becomes employable once they finish.
+ */
+export function rejectCertificateAsUnqualified(email) {
+  const existing = getWorkerRegistration(email);
+  if (!existing?.certificate) return null;
+  return update(email, {
+    certificate: { ...existing.certificate, status: 'rejected', reviewedAt: new Date().toISOString(), reason: REJECT_UNQUALIFIED },
+    // The uploaded certificate no longer counts as proof of experience...
+    hasCertificate: false,
+    // ...and the worker is enrolled in training, unless somehow already in a programme.
+    training: existing.training || newTrainingProgramme(),
+    banned: false,
+    verified: false,
+  });
 }
 
 /**
@@ -206,19 +304,39 @@ export function advanceTraining(email) {
 // Derivation
 // ---------------------------------------------------------------------------
 
+/** True while an uploaded certificate is still waiting on the admin's decision. */
+export function isCertificatePending(record) {
+  return record?.certificate?.status === 'pending';
+}
+
+/** True once an uploaded certificate has been accepted by the admin. */
+export function isCertificateApproved(record) {
+  return record?.certificate?.status === 'approved';
+}
+
+/** True when the account has been banned (currently only ever for a fraudulent certificate). */
+export function isBanned(record) {
+  return !!record?.banned;
+}
+
 /**
- * Is this worker allowed to be assigned jobs?
+ * Is this worker blocked from taking jobs by their training/verification state?
  *
- * Two routes in, mirroring the either/or on the registration form:
- *   - an uploaded experience certificate → job-ready immediately, and
- *   - the free offline training → job-ready only once the programme is finished.
+ * Routes to being employable:
+ *   - an uploaded certificate that the ADMIN HAS APPROVED, or
+ *   - finishing the free offline training programme.
  *
- * Workers with NO record (the seeded demo worker, pre-existing accounts) are job-ready, so this
+ * Blocked while:
+ *   - a certificate is still pending review (nobody has confirmed it is genuine yet), or
+ *   - an enrolled training programme is unfinished.
+ *
+ * Workers with NO record (the seeded demo worker, pre-existing accounts) are employable, so this
  * feature cannot retroactively lock anyone out.
  */
 export function isTrainingBlocked(record) {
   if (!record) return false;
-  if (record.hasCertificate) return false;
+  if (isCertificatePending(record)) return true;
+  if (isCertificateApproved(record)) return false;
   return record.training?.status === 'in-progress';
 }
 
@@ -226,11 +344,13 @@ export function isTrainingBlocked(record) {
 export function registrationCertificates(record) {
   if (!record) return [];
   const out = [];
-  if (record.hasCertificate) {
+  // Only an APPROVED certificate is attached to the profile. A pending one is not yet proof of
+  // anything, and a rejected one must never appear as a credential.
+  if (isCertificateApproved(record)) {
     out.push({
       name: record.certName || 'Experience Certificate',
-      issuer: 'Self-uploaded',
-      date: (record.registeredAt || '').split('T')[0] || '—',
+      issuer: 'Verified by cooperative admin',
+      date: (record.certificate?.reviewedAt || record.registeredAt || '').split('T')[0] || '—',
     });
   }
   if (record.training?.certificateIssued) {
@@ -246,6 +366,32 @@ export function registrationCertificates(record) {
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
+
+/**
+ * Skill counts across every worker who registered through this app and is actually employable —
+ * i.e. not banned, and either certificate-approved or finished with training.
+ *
+ * WHY THIS EXISTS: the admin forecast's staffing gap was computed from mockWorkers alone, so a
+ * worker who signed up in the app, picked their trades and had their certificate approved counted
+ * for nothing. The forecast would keep reporting a shortage of electricians right after three were
+ * onboarded.
+ *
+ * Returns { [serviceId]: count } keyed by service id, matching the forecast's category ids.
+ *
+ * Note this is device-local: MMKV only holds registrations made on this device (see the note in
+ * ml/README.md about cross-device aggregation needing a backend).
+ */
+export function getAllRegisteredSkillCounts() {
+  const counts = {};
+  Object.values(records).forEach((rec) => {
+    if (!rec || rec.banned) return;
+    if (isTrainingBlocked(rec)) return; // still pending verification or mid-training
+    (rec.skills || []).forEach((serviceId) => {
+      counts[serviceId] = (counts[serviceId] || 0) + 1;
+    });
+  });
+  return counts;
+}
 
 /** Live registration record for a worker, re-rendering on any change to the store. */
 export function useWorkerRegistration(email) {

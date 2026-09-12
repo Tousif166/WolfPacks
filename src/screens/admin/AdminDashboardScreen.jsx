@@ -19,8 +19,9 @@ import {
   X,
 } from 'lucide-react-native';
 import { mockWorkers } from '@data/mockWorkers';
-import { mockBookings } from '@data/mockBookings';
-import { mockComplaints } from '@data/mockComplaints';
+import { mockBookings, useBookings } from '@data/mockBookings';
+import { mockComplaints, useComplaints } from '@data/mockComplaints';
+import { getPendingCertificateCount, useWorkerRegistration } from '@data/workerRegistration';
 import { mockServices } from '@data/mockServices';
 import { serviceIcon } from '@components/icons';
 import { getWorkerList } from '@services/supabase';
@@ -148,26 +149,44 @@ function buildRevenueSeries(bookings, limit = 7) {
 
 export default function AdminDashboardScreen({ navigation }) {
   const { t } = useLanguage();
-  const { profile, logout } = useAuth();
+  const { profile, logout, isDemo } = useAuth();
+  // Re-derive the KPIs when a booking is completed/paid or a complaint is filed, so the admin view
+  // reflects activity from the customer and worker portals without an app restart.
+  const bookingsVersion = useBookings();
+  useComplaints();
+  // Subscribes to the registration store so the certificate queue count stays live.
+  useWorkerRegistration(null);
+  const pendingCertCount = getPendingCertificateCount();
 
   const demoWorkerIds = new Set(mockWorkers.map((w) => w.id));
   const [totalWorkers, setTotalWorkers] = useState(mockWorkers.length);
   const activeWorkers = mockWorkers.filter((w) => w.available).length;
 
   useEffect(() => {
+    // A DEMO admin has no Supabase JWT, so this query would be rejected by RLS. Skipping it keeps
+    // the seeded count instead of silently failing on every mount. See AuthContext.DEMO_ACCOUNTS.
+    if (isDemo) return;
     getWorkerList().then(({ data, error }) => {
       if (error || !Array.isArray(data)) return; // keep mock count on failure
       const uniqueRegistered = data.filter((p) => !demoWorkerIds.has(p.id)).length;
       setTotalWorkers(mockWorkers.length + uniqueRegistered);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isDemo]);
 
   const totalBookings = mockBookings.length;
   const totalRevenue = mockBookings.reduce((sum, b) => sum + b.totalPrice, 0);
   const openComplaints = mockComplaints.filter((c) => c.status === 'open').length;
+  // Revenue actually collected, as distinct from booked value — moves when a customer pays.
+  const collectedRevenue = mockBookings
+    .filter((b) => b.paymentStatus === 'paid')
+    .reduce((sum, b) => sum + b.totalPrice, 0);
 
-  const revenueSeries = useMemo(() => buildRevenueSeries(mockBookings), []);
+  // bookingsVersion is a deliberate cache-buster: mockBookings is a mutable singleton whose
+  // identity never changes, so the linter sees the dep as unnecessary while an empty dep list
+  // would actually freeze this chart at whatever was loaded on first mount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const revenueSeries = useMemo(() => buildRevenueSeries(mockBookings), [bookingsVersion]);
 
   // ---- Interactive calendar (frontend-only view state over existing mockBookings) ----
   // Groups the already-loaded bookings by their YYYY-MM-DD date so tapping a day can show that
@@ -181,7 +200,9 @@ export default function AdminDashboardScreen({ navigation }) {
       map.get(key).push(b);
     }
     return map;
-  }, []);
+    // Same mutable-singleton cache-buster as revenueSeries above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookingsVersion]);
 
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedDay, setSelectedDay] = useState(null); // 'YYYY-MM-DD' | null
@@ -306,7 +327,7 @@ export default function AdminDashboardScreen({ navigation }) {
             tone="emerald"
             prefix="₹"
             grouped
-            trend={t('booking_revenue')}
+            trend={t('collected_of_total', { collected: collectedRevenue.toLocaleString() })}
           />
         </View>
         <View style={styles.statCell}>
@@ -347,11 +368,18 @@ export default function AdminDashboardScreen({ navigation }) {
             sub={t('predict_demand')}
             onPress={() => navigation.navigate('AdminForecast')}
           />
+          {/* Certificates awaiting review are surfaced here because a worker sitting in the queue
+              cannot take any jobs — it is time-sensitive for the admin to clear. */}
           <QuickActionCard
             icon={Users}
             tone="mint"
             title={t('manage_workers')}
-            sub={t('registered_online', { total: totalWorkers, active: activeWorkers })}
+            sub={
+              pendingCertCount > 0
+                ? t('certs_awaiting_review', { count: pendingCertCount })
+                : t('registered_online', { total: totalWorkers, active: activeWorkers })
+            }
+            badge={pendingCertCount > 0 ? pendingCertCount : null}
             onPress={() => navigation.navigate('AdminWorkers')}
           />
           <QuickActionCard

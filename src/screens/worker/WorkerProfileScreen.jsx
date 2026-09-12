@@ -11,6 +11,8 @@ import {
   BadgeCheck,
   Wrench,
   Globe,
+  FileClock,
+  GraduationCap,
 } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
@@ -18,7 +20,10 @@ import { ScreenContainer } from '@components/app';
 import LanguageToggle from '@components/ui/LanguageToggle';
 import { LANGUAGES } from '@data/translations';
 import AvatarPortrait from '@components/illustrations/AvatarPortrait';
-import { DEMO_WORKER_ID, demoMockWorker } from './workerData';
+import { useWorkerRegistration } from '@data/workerRegistration';
+import { useWorkerStats } from '@data/workerStats';
+import { useBookings } from '@data/mockBookings';
+import { DEMO_WORKER_ID, demoMockWorker, buildWorkerData } from './workerData';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
 
 /**
@@ -53,22 +58,35 @@ export default function WorkerProfileScreen() {
   const isDemo = user?.id === DEMO_WORKER_ID;
   const langLabel = LANGUAGES.find((l) => l.code === resolvedLanguage)?.label || 'English';
 
-  const displayName = isDemo ? demoMockWorker.name : profile?.full_name || user?.email || 'Worker';
-  const displayEmail = isDemo ? demoMockWorker.email : user?.email || '—';
-  const displayPhone = isDemo ? demoMockWorker.phone : profile?.phone || workerProfile?.phone || '—';
-  const cooperative = isDemo ? demoMockWorker.cooperative : workerProfile?.cooperative || 'Sahakar Seva Cooperative';
-  const joinDate = isDemo
-    ? demoMockWorker.joinDate
-    : profile?.created_at
-    ? new Date(profile.created_at).toISOString().split('T')[0]
-    : '—';
-  const skills = isDemo ? demoMockWorker.skills : workerProfile?.skills || [];
-  const certificates = isDemo ? demoMockWorker.certificates : workerProfile?.certificates || [];
-  const rating = isDemo ? demoMockWorker.rating : workerProfile?.rating ?? null;
-  const totalJobs = isDemo ? demoMockWorker.totalJobs : workerProfile?.total_jobs ?? 0;
-  // Verification comes from the EXISTING data only (demo mock worker `verified`, or the real
-  // worker profile's `verified`). No new field, no invented status.
-  const isVerified = isDemo ? !!demoMockWorker.verified : !!workerProfile?.verified;
+  /**
+   * RESOLVED THROUGH buildWorkerData, not read from workerProfile directly.
+   *
+   * This screen used to read `workerProfile?.certificates`, `workerProfile?.verified` and
+   * `workerProfile?.rating` straight from the auth context. Supabase has no columns for any of
+   * those, so for a real worker they were permanently empty/false — an approved certificate never
+   * showed up, the Verified badge never lit, and the rating/job count ignored every completed job.
+   *
+   * buildWorkerData is where registration certificates, the training certificate, the verified
+   * derivation and the earnings/rating/job deltas are already merged (see workerData.js and
+   * workerStats.js), which is what the dashboard has been using all along. Routing this screen
+   * through the same function is what keeps the two in sync.
+   */
+  useWorkerRegistration(user?.email);
+  useWorkerStats();
+  useBookings();
+  const worker = buildWorkerData(user, profile, workerProfile);
+
+  const displayName = worker.name;
+  const displayEmail = worker.email;
+  const displayPhone = worker.phone;
+  const cooperative = worker.cooperative;
+  const joinDate = worker.joinDate;
+  const skills = worker.skills || [];
+  const certificates = worker.certificates || [];
+  const rating = worker.rating;
+  const totalJobs = worker.totalJobs;
+  const isVerified = !!worker.verified;
+  const training = worker.training;
   // Use an existing avatar URL if the profile ever provides one; otherwise the initial avatar.
   const avatarUrl = isDemo ? demoMockWorker.avatar : workerProfile?.avatar_url || user?.avatar || null;
   // Profession subtitle is just the existing skills, joined — not a fabricated job title.
@@ -211,7 +229,47 @@ export default function WorkerProfileScreen() {
         ) : (
           <Text style={styles.emptyText}>{t('no_certificates')}</Text>
         )}
+
+        {/* Certificate still under admin review — explains an empty or short list above, so the
+            worker is not left wondering where their upload went. */}
+        {worker.certificatePending && (
+          <View style={styles.pendingRow}>
+            <FileClock size={16} color={colors.primary700} strokeWidth={2.3} />
+            <Text style={styles.pendingText}>{t('cert_under_review_title')}</Text>
+          </View>
+        )}
       </View>
+
+      {/* ---- Training programme — mirrors the dashboard so the two never disagree ---- */}
+      {training && (
+        <>
+          <Text style={styles.sectionTitle}>{t('training')}</Text>
+          <View style={styles.card}>
+            <View style={styles.trainRow}>
+              <View style={[styles.trainIcon, training.status === 'completed' && styles.trainIconDone]}>
+                {training.status === 'completed' ? (
+                  <BadgeCheck size={18} color={colors.success700} strokeWidth={2.3} />
+                ) : (
+                  <GraduationCap size={18} color={colors.warning700} strokeWidth={2.3} />
+                )}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.trainName}>
+                  {t(training.status === 'completed' ? 'training_completed_title' : 'training_enrolled_title')}
+                </Text>
+                <Text style={styles.trainMeta}>
+                  {training.status === 'completed'
+                    ? t('training_cert_issued')
+                    : t('training_modules_progress', {
+                        done: training.modulesDone || 0,
+                        total: training.modulesTotal || 8,
+                      })}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </>
+      )}
 
       {/* ---- Logout (subtle destructive) ---- */}
       <Pressable style={styles.logoutBtn} onPress={logout}>
@@ -357,6 +415,24 @@ const styles = StyleSheet.create({
 
   certRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3, paddingVertical: spacing.space3 },
   certRowBorder: { borderBottomWidth: 1, borderBottomColor: colors.gray100 },
+
+  /* Certificate awaiting admin review */
+  pendingRow: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.space2,
+    marginTop: spacing.space3, paddingTop: spacing.space3,
+    borderTopWidth: 1, borderTopColor: colors.gray100,
+  },
+  pendingText: { flex: 1, fontSize: fontSizes.fsXs, color: colors.primary700, fontFamily: fontFamilies.interMedium, lineHeight: 16 },
+
+  /* Training programme row (mirrors the dashboard card) */
+  trainRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3, paddingVertical: spacing.space2 },
+  trainIcon: {
+    width: 40, height: 40, borderRadius: radii.radiusMd, backgroundColor: colors.warning50,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  trainIconDone: { backgroundColor: colors.success50 },
+  trainName: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.gray900 },
+  trainMeta: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interRegular, marginTop: 1, lineHeight: 16 },
   certIcon: { width: 40, height: 40, borderRadius: radii.radiusMd, backgroundColor: colors.accent50, alignItems: 'center', justifyContent: 'center' },
   certName: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.gray900 },
   certMeta: { fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular, marginTop: 2 },

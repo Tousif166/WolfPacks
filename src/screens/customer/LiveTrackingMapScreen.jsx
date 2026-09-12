@@ -6,7 +6,7 @@ import {
   Phone, MessageCircle, Share2, ShieldCheck, Navigation, CheckCircle2, ArrowLeft,
   Route as RouteIcon, Bike, Home as HomeIcon, Pause, Play, RotateCcw, MapPin, Star,
 } from 'lucide-react-native';
-import { mockBookings, DEFAULT_ADDRESS } from '@data/mockBookings';
+import { mockBookings, DEFAULT_ADDRESS, markArrived, useBookings } from '@data/mockBookings';
 import { mockWorkers } from '@data/mockWorkers';
 import { useLanguage } from '@context/LanguageContext';
 import Badge from '@components/ui/Badge';
@@ -129,6 +129,7 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
   const { t } = useLanguage();
   const bookingId = route?.params?.bookingId;
+  useBookings();
 
   const mapRef = useRef(null);
   const [simIndex, setSimIndex] = useState(0);
@@ -158,6 +159,13 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
   const currentPoint = interpolatedRoute[simIndex] || interpolatedRoute[0];
   const isArrived = simIndex >= interpolatedRoute.length - 1;
   const progressPercent = Math.round(currentPoint.totalProgress);
+
+  // When the scripted journey reaches the doorstep, report it against the booking so the worker's
+  // "Job done" button unlocks. The worker portal ALSO derives arrival from elapsed time, so this
+  // is a second, faster path rather than the only one — markArrived is idempotent.
+  useEffect(() => {
+    if (isArrived && booking?.status === 'en-route') markArrived(booking.id);
+  }, [isArrived, booking?.status, booking?.id]);
 
   const remainingDistanceMeters = Math.round(
     haversineMeters(currentPoint.lat, currentPoint.lng, home.lat, home.lng)

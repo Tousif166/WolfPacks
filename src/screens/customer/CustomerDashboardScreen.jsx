@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -8,9 +8,13 @@ import {
 import { useAuth } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
 import { mockServices, getServiceById, serviceName } from '@data/mockServices';
-import { getBookingsByCustomer } from '@data/mockBookings';
+import { getBookingsByCustomer, resolveCustomerId } from '@data/mockBookings';
+import { getComplaintsAgainstCustomer, useComplaints } from '@data/mockComplaints';
+import { scheduleAdvisor } from '@services/complaintAdvisor';
 import { serviceIcon } from '@components/icons';
-import { ScreenContainer, SectionHeader, ServiceCardGrid, GradientBand } from '@components/app';
+import {
+  ScreenContainer, SectionHeader, ServiceCardGrid, GradientBand, ComplaintAgainstYouCard,
+} from '@components/app';
 import Badge from '@components/ui/Badge';
 import HelplineModal from '@components/HelplineModal';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
@@ -43,6 +47,9 @@ const statusVariant = {
 // Labels resolved via t() inside the component (see LIFECYCLE below).
 const STATUS_STEP = { booked: 0, assigned: 0, 'en-route': 1, 'in-progress': 2, completed: 2 };
 
+// LanguageContext stores a code; the AI service wants the English language NAME.
+const LANG_NAME = { en: 'English', hi: 'Hindi', bn: 'Bengali' };
+
 const MOCK_REMINDERS = [
   { id: 1, service_id: 'ac-repair', service_name: 'AC Filter Cleaning', next_due_date: '2026-09-05', interval_days: 90, icon: '❄️' },
   { id: 2, service_id: 'plumbing', service_name: 'RO Water Purifier Service', next_due_date: '2026-09-12', interval_days: 60, icon: '💧' },
@@ -60,12 +67,28 @@ const reminderVisual = (serviceId) => REMINDER_VISUAL[serviceId] || { Icon: Bell
 export default function CustomerDashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const { user, profile } = useAuth();
-  const { t } = useLanguage();
+  const { t, resolvedLanguage } = useLanguage();
   const LIFECYCLE = [t('step_confirmed'), t('step_on_the_way'), t('step_arriving')];
   const bookings = getBookingsByCustomer(user?.id);
   const activeBookings = bookings.filter((b) => ['en-route', 'in-progress', 'assigned'].includes(b.status));
   const [reminders, setReminders] = useState(MOCK_REMINDERS);
   const [showHelpline, setShowHelpline] = useState(false);
+
+  /**
+   * Complaints a WORKER has filed about this customer.
+   *
+   * resolveCustomerId is required: complaints store the booking's customerId, which for the demo
+   * account is canonicalised to 'c1', while user.id is 'demo-customer'. Comparing the raw id would
+   * silently match nothing.
+   */
+  useComplaints();
+  const complaintsAgainstMe = getComplaintsAgainstCustomer(resolveCustomerId(user?.id));
+
+  // Generate any missing suggestion in the background. Fire-and-forget; see complaintAdvisor.js.
+  const awaitingAi = complaintsAgainstMe.filter((c) => c.aiStatus === 'idle').length;
+  useEffect(() => {
+    if (awaitingAi > 0) scheduleAdvisor(LANG_NAME[resolvedLanguage] || 'English');
+  }, [awaitingAi, resolvedLanguage]);
 
   const displayName = profile?.full_name?.split(' ')[0] || user?.name?.split(' ')[0] || t('hi_there');
   // Time-based greeting, localized (reuses the existing good_morning/afternoon/evening keys).
@@ -109,6 +132,12 @@ export default function CustomerDashboardScreen({ navigation }) {
       </GradientBand>
 
       <View style={styles.body}>
+        {/* ---- A worker has reported an issue about this customer. Placed first in the body so it
+                is not buried under promotional content. ---- */}
+        {complaintsAgainstMe.map((c) => (
+          <ComplaintAgainstYouCard key={c.id} complaint={c} filedByLabelKey="filed_by_worker" />
+        ))}
+
         {/* Cooperative hero (gradient) — same CTA + verification messaging as before */}
         <GradientBand colors={['#4f46e5', '#7c3aed']} angle="diagonal" decor style={styles.hero}>
           <View style={styles.heroChip}>

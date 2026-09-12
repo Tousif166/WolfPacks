@@ -14,4 +14,5 @@ export { default as GradientBand } from './GradientBand';
 export { default as ChatWidget } from './ChatWidget';
 export { default as BrandLogo } from './BrandLogo';
 export { default as Confetti } from './Confetti';
+export { default as ComplaintAgainstYouCard } from './ComplaintAgainstYouCard';
 export { Chip, ChipRow } from './Chip';
