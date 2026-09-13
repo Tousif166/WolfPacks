@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Modal as RNModalNative,
   View,
@@ -46,7 +46,13 @@ import {
   Map as MapIcon,
 } from 'lucide-react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { ScreenContainer, Confetti, ComplaintAgainstYouCard } from '@components/app';
+import {
+  ScreenContainer,
+  Confetti,
+  ComplaintAgainstYouCard,
+  AllocationComparisonPanel,
+  AllocationDiagnosisCard,
+} from '@components/app';
 import { useLanguage } from '@context/LanguageContext';
 import { useAuth } from '@context/AuthContext';
 import {
@@ -70,6 +76,8 @@ import {
 import { scheduleAdvisor } from '@services/complaintAdvisor';
 import { useWorkerStatus } from '@data/workerStatus';
 import { useWorkerRegistration } from '@data/workerRegistration';
+import { useWorkerLocations, getWorkerLocation, DEMO_CUSTOMER_ANCHOR } from '@data/workerLocations';
+import { calculateDistance, formatDistance } from '@utils/distance';
 import { useWorkerStats, WEEKLY_HOUR_CAP } from '@data/workerStats';
 import { buildWorkerData } from './workerData';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
@@ -140,6 +148,19 @@ function serviceStyle(name) {
  * Fields the booking record genuinely has are carried over; those it doesn't (customer rating,
  * an urgency grading) are left null so the UI omits them rather than inventing a value.
  */
+/**
+ * Where a job is, for distance purposes.
+ *
+ * Bookings store a human ADDRESS, not coordinates — the customer types a place, and nothing has ever
+ * geocoded it. So rather than invent a position per booking (which would be fabricated data), every
+ * job is anchored to the demo service location, which is what DEFAULT_ADDRESS actually refers to and
+ * where the live-tracking route terminates. The distance shown is therefore genuinely
+ * worker-to-service-area, computed from the worker's real GPS fix.
+ *
+ * When bookings later carry customer coordinates, this is the ONE function that changes.
+ */
+const jobLocation = () => DEMO_CUSTOMER_ANCHOR;
+
 const pendingToJob = (b) => ({
   id: b.id,
   // Carried through so the feed can filter by the worker's skill categories.
@@ -194,6 +215,21 @@ export default function JobFeedScreen() {
   const [selectedJob, setSelectedJob] = useState(null);
   const [showAcceptModal, setShowAcceptModal] = useState(false);
   const [accepted, setAccepted] = useState(null);
+  /**
+   * Which allocation comparison is expanded, or null for none.
+   *
+   * The three filter pills used to be a sort control (fairness order, an opt-in distance sort, and a
+   * dead decorative Earnings pill). They are now the entry points to the fairness explanation: each
+   * opens the comparison for that axis across the professionals the customer's scan turned up. One at
+   * a time, accordion-style, because two open tables push the actual job list off the screen.
+   */
+  const [comparison, setComparison] = useState(null); // 'overall' | 'distance' | 'earnings' | null
+  const toggleComparison = (view) => setComparison((current) => (current === view ? null : view));
+
+  // Subscribes to the location store so a fix captured on the dashboard shows up here immediately.
+  useWorkerLocations();
+  // null when this worker has no usable position — the per-job distance row degrades to hidden.
+  const workerLocation = getWorkerLocation(workerId);
 
   // The queue is only ever PULLED while the worker is online and off leave. Going offline freezes
   // it — whatever was listed stays on screen but every Accept is locked — and coming back online
@@ -214,9 +250,39 @@ export default function JobFeedScreen() {
   const skillIds = worker.skillIds || [];
   const matchesSkills = (job) => skillIds.length === 0 || !job.serviceId || skillIds.includes(job.serviceId);
 
-  const allJobs = [...pendingJobs, ...demoJobs];
-  const jobs = allJobs.filter(matchesSkills);
-  const hiddenByCategory = allJobs.length - jobs.length;
+  /**
+   * GEO ENRICHMENT — real distance per job, computed once per input change.
+   *
+   * useMemo is not a micro-optimisation here: this screen re-renders on a 1-second interval while any
+   * job is en-route, and recomputing Haversine for every card on every tick is exactly the
+   * "calculate distances on every render" pattern that has to be avoided. Keyed on the worker's
+   * coordinates and the job list, so it recomputes only when one of those actually changes.
+   *
+   * `distanceKm` is null when the worker has no fix. Null is rendered as "no distance row" rather
+   * than "0 km" — an unknown distance must never look like the closest possible job.
+   */
+  const allJobs = useMemo(() => {
+    const merged = [...pendingJobs, ...demoJobs];
+    if (!workerLocation) return merged.map((j) => ({ ...j, distanceKm: null }));
+    return merged.map((j) => {
+      const loc = jobLocation(j);
+      return {
+        ...j,
+        distanceKm: calculateDistance(workerLocation.lat, workerLocation.lng, loc.lat, loc.lng),
+      };
+    });
+  }, [pendingJobs, demoJobs, workerLocation]);
+
+  const bySkill = allJobs.filter(matchesSkills);
+  const hiddenByCategory = allJobs.length - bySkill.length;
+
+  /**
+   * The feed is always in FAIRNESS order. That is deliberate and is why the pills no longer re-sort
+   * it: on a cooperative platform the ordering must not become "closest worker grabs everything", or
+   * workers near the depot would take every job. Distance and earnings are things the worker can now
+   * INSPECT (see `comparison`) without being able to reorder the queue in their own favour.
+   */
+  const jobs = bySkill;
 
   // ---- Jobs this worker has already taken ----
   const activeJobs = getWorkerActiveJobs(workerId);
@@ -483,6 +549,13 @@ export default function JobFeedScreen() {
         </View>
       )}
 
+      {/* NOTE: the "Show distance to jobs" opt-in CTA that used to sit here has been removed. It
+              asked the worker to hand over GPS in order to unlock a distance column, and the Distance
+              control below no longer needs one — it now explains the allocation that already happened,
+              from the fixed scan roster, so there was nothing left for the permission to buy. Jobs
+              still show a real distance row whenever a position happens to be known (captured when
+              the worker goes online from the dashboard). */}
+
       {/* ---- Category note: makes the filter visible instead of jobs just silently missing ---- */}
       {skillIds.length > 0 && hiddenByCategory > 0 && (
         <View style={styles.skillNote}>
@@ -493,23 +566,45 @@ export default function JobFeedScreen() {
         </View>
       )}
 
-      {/* ---- Sort / filter pills ---- */}
+      {/* ---- Allocation pills ----
+              All three are live now. Each opens the comparison for that axis across the professionals
+              the customer's scan found, which is what turns "assigned in a fairness queue" from a
+              slogan into something the worker can actually check. The queue order itself is not
+              user-controllable — see the note on `jobs`. */}
       <View style={styles.pillRow}>
-        {/* Reflects the real, existing behaviour: the list is fairness-ordered. */}
-        <View style={[styles.pill, styles.pillActive]}>
-          <Text style={[styles.pillText, styles.pillTextActive]}>{t('fairness_queue')}</Text>
-          <ChevronDown size={14} color={colors.success700} strokeWidth={2.4} />
-        </View>
-        {/* Distance / Earnings sorting do NOT exist in the app — shown disabled, wire to nothing. */}
-        <View style={[styles.pill, styles.pillDisabled]}>
-          <Text style={styles.pillTextDisabled}>{t('distance')}</Text>
-          <ChevronDown size={14} color={colors.gray300} strokeWidth={2.4} />
-        </View>
-        <View style={[styles.pill, styles.pillDisabled]}>
-          <Text style={styles.pillTextDisabled}>{t('earnings')}</Text>
-          <ChevronDown size={14} color={colors.gray300} strokeWidth={2.4} />
-        </View>
+        {[
+          { view: 'overall', label: t('fairness_queue') },
+          { view: 'distance', label: t('distance') },
+          { view: 'earnings', label: t('earnings') },
+        ].map(({ view, label }) => {
+          const open = comparison === view;
+          return (
+            <Pressable
+              key={view}
+              style={[styles.pill, open && styles.pillActive]}
+              onPress={() => toggleComparison(view)}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: open, selected: open }}
+              accessibilityLabel={label}
+            >
+              <Text style={[styles.pillText, open && styles.pillTextActive]}>{label}</Text>
+              <ChevronDown
+                size={14}
+                color={open ? colors.success700 : colors.gray500}
+                strokeWidth={2.4}
+                style={open ? styles.pillChevronOpen : undefined}
+              />
+            </Pressable>
+          );
+        })}
       </View>
+
+      {/* The expanded comparison. Hidden until a pill is tapped so the feed still opens on jobs. */}
+      {comparison ? (
+        <AllocationComparisonPanel view={comparison} youName={worker.name} style={styles.comparisonPanel} />
+      ) : (
+        <Text style={styles.pillHint}>{t('alloc_tap_hint')}</Text>
+      )}
 
       {/* ---- Job list ---- */}
       <View style={styles.list}>
@@ -550,6 +645,15 @@ export default function JobFeedScreen() {
                   <MapPin size={15} color={colors.gray400} strokeWidth={2} />
                   <Text style={styles.metaText} numberOfLines={2}>{job.address}</Text>
                 </View>
+                {/* REAL distance, from the worker's GPS fix to the job. Rendered only when actually
+                    known — a worker with no location sees no distance row rather than a
+                    misleading "0 km". Never shows coordinates, only an approximate distance. */}
+                {formatDistance(job.distanceKm) && (
+                  <View style={styles.metaItem}>
+                    <Navigation2 size={15} color={colors.success600} strokeWidth={2.2} />
+                    <Text style={styles.distanceText}>{t('km_away', { distance: formatDistance(job.distanceKm) })}</Text>
+                  </View>
+                )}
                 <View style={styles.metaSplit}>
                   <View style={styles.metaItemHalf}>
                     <Clock size={15} color={colors.gray400} strokeWidth={2} />
@@ -626,6 +730,7 @@ export default function JobFeedScreen() {
         isOpen={showAcceptModal}
         onClose={() => setShowAcceptModal(false)}
         onConfirm={handleAccept}
+        workerName={worker.name}
       />
     </ScreenContainer>
   );
@@ -643,7 +748,7 @@ export default function JobFeedScreen() {
  * breakdown, relative countdown, estimated duration, service-area flag, and a live route/map
  * (there's no valid map route for an unaccepted job — a static preview stands in instead).
  */
-function AcceptJobSheet({ job, isOpen, onClose, onConfirm }) {
+function AcceptJobSheet({ job, isOpen, onClose, onConfirm, workerName }) {
   const insets = useSafeAreaInsets();
   const { t } = useLanguage();
   const { height } = useWindowDimensions();
@@ -820,6 +925,21 @@ function AcceptJobSheet({ job, isOpen, onClose, onConfirm }) {
                 <WhyItem text={t('why_fairness', { pos: job.fairnessPosition })} />
                 <WhyItem text={t('why_skill', { service: job.serviceName })} last />
               </View>
+
+              {/* ---- ALLOCATION DIAGNOSIS ----
+                  The fairness system showing its working at the moment the worker decides. Same
+                  roster the customer's GPS scan animated, so the worker is reading the actual
+                  comparison that sent this job to them rather than a separate reassurance. The full
+                  per-axis tables are behind the feed's Distance / Earnings pills. */}
+              <AllocationDiagnosisCard
+                youName={workerName}
+                serviceName={job.serviceName}
+                fairnessPosition={job.fairnessPosition}
+              />
+
+              {/* Overall table inline as well: at the point of accepting, "I was compared with three
+                  others and here they are" is more convincing than a list of claims about them. */}
+              <AllocationComparisonPanel view="overall" youName={workerName} />
             </ScrollView>
 
             {/* Actions */}
@@ -1182,8 +1302,14 @@ const styles = StyleSheet.create({
   },
   skillNoteText: { flex: 1, fontSize: fontSizes.fsXs, color: colors.primary700, fontFamily: fontFamilies.interMedium, lineHeight: 15 },
 
-  // ---- Sort / filter pills ----
-  pillRow: { flexDirection: 'row', gap: spacing.space2, marginBottom: spacing.space4, flexWrap: 'wrap' },
+  // ---- Allocation pills + expanded comparison ----
+  pillRow: { flexDirection: 'row', gap: spacing.space2, marginBottom: spacing.space3, flexWrap: 'wrap' },
+  pillChevronOpen: { transform: [{ rotate: '180deg' }] },
+  pillHint: {
+    fontSize: fontSizes.fsXs, color: colors.gray500,
+    fontFamily: fontFamilies.interRegular, marginBottom: spacing.space4,
+  },
+  comparisonPanel: { marginBottom: spacing.space4 },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1196,10 +1322,8 @@ const styles = StyleSheet.create({
     borderColor: colors.gray200,
   },
   pillActive: { backgroundColor: colors.success50, borderColor: '#6ee7b7' },
-  pillDisabled: { backgroundColor: colors.gray50, borderColor: colors.gray100 },
   pillText: { fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, color: colors.gray600 },
   pillTextActive: { color: colors.success700 },
-  pillTextDisabled: { fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interMedium, color: colors.gray400 },
 
   // ---- List / card ----
   list: { gap: spacing.space4 },
@@ -1253,6 +1377,15 @@ const styles = StyleSheet.create({
   metaSplit: { flexDirection: 'row', gap: spacing.space3, flexWrap: 'wrap' },
   metaItemHalf: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1, minWidth: '45%' },
   metaText: { fontSize: fontSizes.fsSm, color: colors.gray600, fontFamily: fontFamilies.interMedium, flexShrink: 1 },
+  // Green + semibold: distance is a decision-grade signal for a worker choosing a job, so it reads
+  // stronger than the surrounding grey metadata.
+  distanceText: {
+    fontSize: fontSizes.fsSm,
+    color: colors.success700,
+    fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold,
+    flexShrink: 1,
+  },
   ratingChip: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingVertical: 2, paddingHorizontal: 6, backgroundColor: colors.accent50, borderRadius: radii.radiusFull },
   ratingText: { fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interBold, fontWeight: fontWeights.fwBold, color: colors.accent700 },
 

@@ -15,4 +15,8 @@ export { default as ChatWidget } from './ChatWidget';
 export { default as BrandLogo } from './BrandLogo';
 export { default as Confetti } from './Confetti';
 export { default as ComplaintAgainstYouCard } from './ComplaintAgainstYouCard';
+// Fairness-allocation walkthrough: the customer's GPS scan animation and the worker's
+// "why me and not them" comparison. Both read the same roster (src/data/allocationDemo.js).
+export { default as GpsAllocationScanner } from './GpsAllocationScanner';
+export { default as AllocationComparisonPanel, AllocationDiagnosisCard } from './AllocationComparisonPanel';
 export { Chip, ChipRow } from './Chip';

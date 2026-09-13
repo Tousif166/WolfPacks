@@ -12,6 +12,24 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
+    <!-- Location is for geo-matching: pairing a customer's service request with nearby eligible
+         workers, and letting a worker publish their position when they go online. Requested at the
+         POINT OF USE (customer taps "use my current location", worker goes online), never at launch
+         — see src/services/locationService.js.
+
+         COARSE is declared alongside FINE so a user who grants only approximate location still gets
+         working distance matching; a few hundred metres of error is immaterial when the operating
+         radius is 10 km. Both are optional in practice: every screen falls back to the saved address
+         if permission is refused, so the app remains fully usable without them.
+
+         NO background location permission is requested. Tracking stops when the worker goes
+         offline, so there is no legitimate need for ACCESS_BACKGROUND_LOCATION, and asking for it
+         would be a privacy overreach on a workers' cooperative app. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+
     <!-- Android 11+ package visibility: without this, SpeechRecognizer.isRecognitionAvailable()
          can't see the on-device speech-recognition service and returns false even when Google
          Speech Services is installed. Required for the STT engine to be detected. -->

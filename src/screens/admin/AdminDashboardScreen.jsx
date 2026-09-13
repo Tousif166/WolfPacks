@@ -17,12 +17,25 @@ import {
   ChevronLeft,
   ChevronRight,
   X,
+  PiggyBank,
+  ServerCog,
+  ShieldPlus,
+  Wrench,
+  HandCoins,
+  Info,
 } from 'lucide-react-native';
 import { mockWorkers } from '@data/mockWorkers';
 import { mockBookings, useBookings } from '@data/mockBookings';
 import { mockComplaints, useComplaints } from '@data/mockComplaints';
 import { getPendingCertificateCount, useWorkerRegistration } from '@data/workerRegistration';
 import { mockServices } from '@data/mockServices';
+import {
+  getCooperativeFundPool,
+  formatFundAmount,
+  FUND_SPLIT,
+  COOPERATIVE_FUND_SHARE,
+  WELFARE_CESS_RATE,
+} from '@data/cooperativeFund';
 import { serviceIcon } from '@components/icons';
 import { getWorkerList } from '@services/supabase';
 import { useLanguage } from '@context/LanguageContext';
@@ -205,6 +218,10 @@ export default function AdminDashboardScreen({ navigation }) {
   }, [bookingsVersion]);
 
   const [calendarOpen, setCalendarOpen] = useState(false);
+  // ---- Cooperative welfare fund ----
+  // A fixed ledger, so no memo dependency: the pool does not change while this screen is open.
+  const fund = getCooperativeFundPool();
+  const [fundOpen, setFundOpen] = useState(false);
   const [selectedDay, setSelectedDay] = useState(null); // 'YYYY-MM-DD' | null
   const [viewMonth, setViewMonth] = useState(() => {
     const d = new Date();
@@ -266,26 +283,47 @@ export default function AdminDashboardScreen({ navigation }) {
           </View>
         </View>
 
-        <Pressable
-          style={({ pressed }) => [styles.datePill, pressed && styles.datePillPressed]}
-          onPress={() => setCalendarOpen(true)}
-          accessibilityRole="button"
-          accessibilityLabel={`Open calendar. Today is ${now.toDateString()}`}
-        >
-          <View style={styles.datePillIcon}>
-            <CalendarDays size={15} color={colors.primary600} strokeWidth={2.2} />
-          </View>
-          <View>
-            <Text style={styles.datePillDay}>
-              {now.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}
-            </Text>
-            <Text style={styles.datePillWeekday}>
-              {now.toLocaleDateString(undefined, { weekday: 'short' })}
-            </Text>
-          </View>
-          {/* Dropdown chevron — tapping the pill opens the interactive calendar. */}
-          <ChevronDown size={15} color={colors.gray400} strokeWidth={2.4} style={styles.datePillChevron} />
-        </Pressable>
+        {/* Date pill and the welfare-fund summary share one row, so the fund sits beside the
+            calendar as a peer control rather than being pushed down among the KPI cards. */}
+        <View style={styles.headerControlsRow}>
+          <Pressable
+            style={({ pressed }) => [styles.datePill, pressed && styles.datePillPressed]}
+            onPress={() => setCalendarOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`Open calendar. Today is ${now.toDateString()}`}
+          >
+            <View style={styles.datePillIcon}>
+              <CalendarDays size={15} color={colors.primary600} strokeWidth={2.2} />
+            </View>
+            <View>
+              <Text style={styles.datePillDay}>
+                {now.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}
+              </Text>
+              <Text style={styles.datePillWeekday}>
+                {now.toLocaleDateString(undefined, { weekday: 'short' })}
+              </Text>
+            </View>
+            {/* Dropdown chevron — tapping the pill opens the interactive calendar. */}
+            <ChevronDown size={15} color={colors.gray400} strokeWidth={2.4} style={styles.datePillChevron} />
+          </Pressable>
+
+          {/* Collective welfare pool. Compact here — the three-way division opens in a sheet. */}
+          <Pressable
+            style={({ pressed }) => [styles.fundPill, pressed && styles.fundPillPressed]}
+            onPress={() => setFundOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`${t('coop_fund')}. ₹${formatFundAmount(fund.poolTotal)}. ${t('coop_fund_open')}`}
+          >
+            <View style={styles.fundPillIcon}>
+              <PiggyBank size={15} color={colors.success700} strokeWidth={2.2} />
+            </View>
+            <View style={styles.fundPillText}>
+              <Text style={styles.fundPillLabel} numberOfLines={1}>{t('coop_fund')}</Text>
+              <Text style={styles.fundPillValue} numberOfLines={1}>₹{formatFundAmount(fund.poolTotal)}</Text>
+            </View>
+            <ChevronRight size={15} color={colors.success600} strokeWidth={2.4} />
+          </Pressable>
+        </View>
       </Animated.View>
 
       {/* ---------------- Interactive calendar (bottom sheet) ---------------- */}
@@ -298,6 +336,9 @@ export default function AdminDashboardScreen({ navigation }) {
         setSelectedDay={setSelectedDay}
         bookingsByDay={bookingsByDay}
       />
+
+      {/* ---------------- Cooperative welfare fund (bottom sheet) ---------------- */}
+      <FundSheet visible={fundOpen} onClose={() => setFundOpen(false)} fund={fund} />
 
       {/* ---------------- KPI grid (2 columns) ---------------- */}
       <Animated.View style={[styles.statsGrid, rise(14)]}>
@@ -580,6 +621,187 @@ function CalendarSheet({ visible, onClose, viewMonth, setViewMonth, selectedDay,
               <Text style={styles.calHint}>{t('tap_date_hint')}</Text>
             )}
           </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Cooperative welfare fund — bottom sheet                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The three-way division of the welfare cess pool.
+ *
+ * WHY A SHEET AND NOT A FOURTH KPI CARD: a single number ("₹34,920") is the least interesting thing
+ * about this fund. What matters is that 75% of it leaves the platform, and what the two cooperative
+ * divisions are for. That needs room to explain, and the header pill next to the calendar is the
+ * entry point.
+ *
+ * Every amount comes from getCooperativeFundPool(), which runs the accumulated pool through the SAME
+ * splitWelfareCess used on the customer's invoice — so the percentages here and the percentages a
+ * customer was shown at checkout are the same numbers, not two hardcoded lists that could drift.
+ *
+ * The pool total is seeded demo data and the sheet says so, in line with this screen's rule about not
+ * passing invented figures off as derived ones. See FUND_LEDGER for why it is not computed from
+ * mockBookings (the cess is never accumulated anywhere, and four demo bookings would pool a sum too
+ * small to divide meaningfully).
+ */
+function FundSheet({ visible, onClose, fund }) {
+  const { t } = useLanguage();
+  const { split, month } = fund;
+  const pctText = (share) => `${Math.round(share * 100)}%`;
+  const cessPct = Math.round(WELFARE_CESS_RATE * 100);
+
+  const divisions = [
+    {
+      id: 'appMaintenance',
+      Icon: ServerCog,
+      title: t('cess_app_maintenance'),
+      desc: t('coop_fund_app_desc'),
+      share: FUND_SPLIT.appMaintenance,
+      amount: split.appMaintenance,
+      monthAmount: month.appMaintenance,
+      accent: colors.primary600,
+      tint: colors.primary50,
+      border: colors.primary100,
+    },
+    {
+      id: 'emergency',
+      Icon: ShieldPlus,
+      title: t('cess_emergency'),
+      desc: t('coop_fund_emergency_desc'),
+      share: FUND_SPLIT.emergency,
+      amount: split.emergency,
+      monthAmount: month.emergency,
+      accent: colors.danger600,
+      tint: colors.danger50,
+      border: colors.danger100,
+    },
+    {
+      id: 'tools',
+      Icon: Wrench,
+      title: t('cess_tools'),
+      desc: t('coop_fund_tools_desc'),
+      share: FUND_SPLIT.tools,
+      amount: split.tools,
+      monthAmount: month.tools,
+      accent: colors.accent700,
+      tint: colors.accent50,
+      border: colors.accent100,
+    },
+  ];
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <View style={styles.calBackdrop}>
+        <Pressable style={styles.calBackdropTap} onPress={onClose} accessibilityLabel="Close fund details" />
+
+        <View style={styles.calSheet}>
+          <View style={styles.calSheetHead}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.calSheetTitle}>{t('coop_fund_sheet_title')}</Text>
+              <Text style={styles.fundSheetSub}>{t('coop_fund_sheet_sub', { pct: cessPct })}</Text>
+            </View>
+            <Pressable onPress={onClose} hitSlop={8} style={styles.calCloseBtn} accessibilityLabel="Close">
+              <X size={20} color={colors.gray600} />
+            </Pressable>
+          </View>
+
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.fundScroll}>
+            {/* ---- Pool total ---- */}
+            <View style={styles.fundHero}>
+              <View style={styles.fundHeroTop}>
+                <View style={styles.fundHeroIcon}>
+                  <PiggyBank size={20} color={colors.white} strokeWidth={2.2} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.fundHeroLabel}>{t('coop_fund_total_label', { since: fund.sinceLabel })}</Text>
+                  <Text style={styles.fundHeroValue}>₹{formatFundAmount(fund.poolTotal)}</Text>
+                </View>
+              </View>
+              <View style={styles.fundHeroMetaRow}>
+                <Text style={styles.fundHeroMeta}>
+                  {t('coop_fund_bookings', { count: formatFundAmount(fund.contributingBookings) })}
+                </Text>
+                <Text style={styles.fundHeroDot}>•</Text>
+                <Text style={styles.fundHeroMeta}>
+                  {t('coop_fund_avg', { amount: formatFundAmount(fund.averagePerBooking) })}
+                </Text>
+              </View>
+              <View style={styles.fundMonthRow}>
+                <HandCoins size={13} color={colors.success100} strokeWidth={2.3} />
+                <Text style={styles.fundMonthText}>
+                  {t('coop_fund_month', {
+                    amount: formatFundAmount(fund.monthTotal),
+                    count: fund.monthBookings,
+                  })}
+                </Text>
+              </View>
+            </View>
+
+            {/* ---- The collective-ownership caveat, stated before the numbers are broken down ---- */}
+            <View style={styles.fundCaveat}>
+              <Info size={14} color={colors.info700} strokeWidth={2.3} />
+              <Text style={styles.fundCaveatText}>{t('coop_fund_not_individual')}</Text>
+            </View>
+
+            {/* ---- Proportion bar: the split at a glance, before the per-division detail ---- */}
+            <Text style={styles.fundSectionTitle}>{t('coop_fund_divisions')}</Text>
+            <View style={styles.fundBar}>
+              {divisions.map((d) => (
+                <View
+                  key={d.id}
+                  style={{ flex: d.share, backgroundColor: d.accent, height: '100%' }}
+                />
+              ))}
+            </View>
+            <View style={styles.fundLegend}>
+              {divisions.map((d) => (
+                <View key={d.id} style={styles.fundLegendItem}>
+                  <View style={[styles.fundLegendDot, { backgroundColor: d.accent }]} />
+                  <Text style={styles.fundLegendText}>{pctText(d.share)}</Text>
+                </View>
+              ))}
+            </View>
+
+            {/* ---- Per-division detail ---- */}
+            {divisions.map((d) => (
+              <View key={d.id} style={[styles.fundCard, { backgroundColor: d.tint, borderColor: d.border }]}>
+                <View style={styles.fundCardHead}>
+                  <View style={[styles.fundCardIcon, { backgroundColor: colors.white }]}>
+                    <d.Icon size={16} color={d.accent} strokeWidth={2.3} />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={styles.fundCardTitle} numberOfLines={2}>{d.title}</Text>
+                    <Text style={styles.fundCardDesc} numberOfLines={3}>{d.desc}</Text>
+                  </View>
+                  <View style={styles.fundCardAmounts}>
+                    <Text style={[styles.fundCardPct, { color: d.accent }]}>{pctText(d.share)}</Text>
+                    <Text style={styles.fundCardAmount}>₹{formatFundAmount(d.amount)}</Text>
+                    <Text style={styles.fundCardMonth}>
+                      {t('coop_fund_this_month_short', { amount: formatFundAmount(d.monthAmount) })}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            ))}
+
+            {/* ---- How the cess divides, in words ---- */}
+            <View style={styles.fundRule}>
+              <Text style={styles.fundRuleTitle}>{t('coop_fund_rule_title', { pct: cessPct })}</Text>
+              <Text style={styles.fundRuleText}>
+                {t('coop_fund_rule_body', {
+                  app: pctText(FUND_SPLIT.appMaintenance),
+                  coop: pctText(COOPERATIVE_FUND_SHARE),
+                  emergency: pctText(FUND_SPLIT.emergency),
+                  tools: pctText(FUND_SPLIT.tools),
+                })}
+              </Text>
+              {fund.isSeeded && <Text style={styles.fundSeededNote}>{t('coop_fund_seeded_note')}</Text>}
+            </View>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -1085,12 +1307,18 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: colors.surfaceWhite,
   },
+  // The date pill and the fund pill sit side by side. marginTop lives on the ROW rather than on the
+  // pill, so the two controls can never end up vertically offset from each other.
+  headerControlsRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: spacing.space2,
+    marginTop: spacing.space4,
+  },
   datePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
     gap: spacing.space2,
-    marginTop: spacing.space4,
     backgroundColor: colors.surfaceWhite,
     borderRadius: radii.radiusMd,
     borderWidth: 1,
@@ -1098,6 +1326,42 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     paddingHorizontal: spacing.space3,
     ...shadows.shadowSm,
+  },
+
+  /* Cooperative welfare fund — header pill beside the calendar */
+  fundPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.space2,
+    backgroundColor: colors.success50,
+    borderRadius: radii.radiusMd,
+    borderWidth: 1,
+    borderColor: colors.success100,
+    paddingVertical: 7,
+    paddingHorizontal: spacing.space3,
+    ...shadows.shadowSm,
+  },
+  fundPillPressed: { backgroundColor: '#dcfce7', transform: [{ scale: 0.98 }] },
+  fundPillIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: radii.radiusSm,
+    backgroundColor: colors.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fundPillText: { flex: 1, minWidth: 0 },
+  fundPillLabel: {
+    fontSize: 10,
+    fontFamily: fontFamilies.interMedium,
+    color: colors.success700,
+  },
+  fundPillValue: {
+    fontSize: 12,
+    fontFamily: fontFamilies.interBold,
+    fontWeight: fontWeights.fwBold,
+    color: colors.success800,
   },
   datePillChevron: { marginLeft: 2 },
   datePillPressed: { backgroundColor: colors.gray50, transform: [{ scale: 0.98 }] },
@@ -1482,9 +1746,162 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.space6,
     maxHeight: '88%',
   },
-  calSheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: spacing.space2 },
+  calSheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: spacing.space2, gap: spacing.space3 },
   calSheetTitle: { fontSize: fontSizes.fsLg, fontFamily: fontFamilies.interExtraBold, fontWeight: fontWeights.fwExtrabold, color: colors.gray900 },
   calCloseBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: radii.radiusFull, backgroundColor: colors.gray100 },
+
+  /* ---------------- Cooperative welfare fund sheet ---------------- */
+  fundSheetSub: {
+    fontSize: fontSizes.fsXs,
+    fontFamily: fontFamilies.interRegular,
+    color: colors.gray500,
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  fundScroll: { paddingTop: spacing.space3, paddingBottom: spacing.space4, gap: spacing.space3 },
+
+  fundHero: {
+    padding: spacing.space4,
+    borderRadius: radii.radiusLg,
+    backgroundColor: '#0f8a5f',
+    borderWidth: 1,
+    borderColor: '#12a06e',
+  },
+  fundHeroTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3 },
+  fundHeroIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: radii.radiusMd,
+    backgroundColor: 'rgba(255,255,255,0.20)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fundHeroLabel: { fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interMedium, color: 'rgba(255,255,255,0.82)' },
+  fundHeroValue: {
+    fontSize: fontSizes.fs2xl,
+    fontFamily: fontFamilies.interExtraBold,
+    fontWeight: fontWeights.fwExtrabold,
+    color: colors.white,
+    letterSpacing: -0.5,
+  },
+  fundHeroMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: spacing.space3, flexWrap: 'wrap' },
+  fundHeroMeta: { fontSize: 11, fontFamily: fontFamilies.interMedium, color: 'rgba(255,255,255,0.85)' },
+  fundHeroDot: { fontSize: 11, color: 'rgba(255,255,255,0.5)' },
+  fundMonthRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: spacing.space3,
+    paddingTop: spacing.space3,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.22)',
+  },
+  fundMonthText: { flex: 1, fontSize: 11, fontFamily: fontFamilies.interMedium, color: colors.success100, lineHeight: 15 },
+
+  fundCaveat: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 7,
+    padding: spacing.space3,
+    borderRadius: radii.radiusMd,
+    backgroundColor: colors.info50,
+    borderWidth: 1,
+    borderColor: colors.info100,
+  },
+  fundCaveatText: {
+    flex: 1,
+    fontSize: fontSizes.fsXs,
+    fontFamily: fontFamilies.interMedium,
+    color: colors.info800,
+    lineHeight: 16,
+  },
+
+  fundSectionTitle: {
+    fontSize: fontSizes.fsSm,
+    fontFamily: fontFamilies.interBold,
+    fontWeight: fontWeights.fwBold,
+    color: colors.gray900,
+    marginTop: spacing.space1,
+  },
+  // Single stacked bar: the three flex weights ARE the three shares, so the widths cannot disagree
+  // with the percentages printed under them.
+  fundBar: {
+    flexDirection: 'row',
+    height: 12,
+    borderRadius: radii.radiusFull,
+    overflow: 'hidden',
+    backgroundColor: colors.gray100,
+  },
+  fundLegend: { flexDirection: 'row', gap: spacing.space4 },
+  fundLegendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  fundLegendDot: { width: 8, height: 8, borderRadius: radii.radiusFull },
+  fundLegendText: { fontSize: 11, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, color: colors.gray600 },
+
+  fundCard: {
+    padding: spacing.space3,
+    borderRadius: radii.radiusLg,
+    borderWidth: 1,
+  },
+  fundCardHead: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.space3 },
+  fundCardIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: radii.radiusSm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fundCardTitle: {
+    fontSize: fontSizes.fsSm,
+    fontFamily: fontFamilies.interBold,
+    fontWeight: fontWeights.fwBold,
+    color: colors.gray900,
+  },
+  fundCardDesc: {
+    fontSize: 10.5,
+    fontFamily: fontFamilies.interRegular,
+    color: colors.gray600,
+    marginTop: 2,
+    lineHeight: 14.5,
+  },
+  fundCardAmounts: { alignItems: 'flex-end', minWidth: 78 },
+  fundCardPct: { fontSize: 11, fontFamily: fontFamilies.interBold, fontWeight: fontWeights.fwBold },
+  fundCardAmount: {
+    fontSize: fontSizes.fsBase,
+    fontFamily: fontFamilies.interExtraBold,
+    fontWeight: fontWeights.fwExtrabold,
+    color: colors.gray900,
+    marginTop: 1,
+  },
+  fundCardMonth: { fontSize: 9.5, fontFamily: fontFamilies.interRegular, color: colors.gray500, marginTop: 1 },
+
+  fundRule: {
+    padding: spacing.space3,
+    borderRadius: radii.radiusMd,
+    backgroundColor: colors.gray50,
+    borderWidth: 1,
+    borderColor: colors.gray200,
+  },
+  fundRuleTitle: {
+    fontSize: fontSizes.fsXs,
+    fontFamily: fontFamilies.interBold,
+    fontWeight: fontWeights.fwBold,
+    color: colors.gray800,
+  },
+  fundRuleText: {
+    fontSize: 11,
+    fontFamily: fontFamilies.interRegular,
+    color: colors.gray600,
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  fundSeededNote: {
+    fontSize: 10,
+    fontFamily: fontFamilies.interRegular,
+    fontStyle: 'italic',
+    color: colors.gray400,
+    marginTop: spacing.space2,
+    lineHeight: 14,
+  },
 
   calMonthRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.space2, marginBottom: spacing.space2 },
   calNavBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: radii.radiusMd, backgroundColor: colors.primary50 },

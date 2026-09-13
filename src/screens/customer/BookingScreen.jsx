@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet, ActivityIndicator, Image, Alert, Animated, Easing, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -8,16 +8,27 @@ import {
   Sparkles, Receipt, Navigation, ShieldCheck, Printer, ClipboardList,
   Camera, ImagePlus, X, Home, Heart,
   Users, Leaf, IndianRupee, ChevronRight, Bot,
-  Umbrella, Zap, Sunrise, Sun, Sunset, MapPin,
+  Umbrella, Zap, Sunrise, Sun, Sunset, MapPin, Navigation2,
+  Split, ServerCog, HandCoins, ShieldPlus, Wrench,
 } from 'lucide-react-native';
 import { mockServices, currentWeather, serviceName } from '@data/mockServices';
 import { addBooking, resolveCustomerId, getBookingById, DEFAULT_ADDRESS } from '@data/mockBookings';
 import { getServiceDiagnosis } from '@services/aiService';
+import { findNearbyWorkers } from '@services/geoMatchingService';
+import { useWorkerLocations, DEMO_CUSTOMER_ANCHOR } from '@data/workerLocations';
+import {
+  splitWelfareCess,
+  formatFundAmount,
+  FUND_SPLIT,
+  COOPERATIVE_FUND_SHARE,
+} from '@data/cooperativeFund';
+import { DEFAULT_MATCHING_RADIUS_KM } from '@utils/distance';
+import NearbyWorkersPanel from '@components/app/NearbyWorkersPanel';
 import { shareReceipt } from '@utils/receipt';
 import { useAuth } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
 import useSpeechToText from '@hooks/useSpeechToText';
-import { ScreenContainer, Confetti } from '@components/app';
+import { ScreenContainer, Confetti, GpsAllocationScanner } from '@components/app';
 import { serviceIcon } from '@components/icons';
 import { TextArea } from '@components/ui/Input';
 import { FairnessBadge } from '@components/ui/Badge';
@@ -202,6 +213,104 @@ export default function BookingScreen({ navigation, route }) {
   const [time, setTime] = useState('10:00 AM');
   const [address, setAddress] = useState(profile?.address || DEFAULT_ADDRESS);
   const [confirmedBooking, setConfirmedBooking] = useState(null);
+  /**
+   * Allocation sequence gate.
+   *
+   * Confirm Booking no longer writes the booking straight away: it starts the GPS allocation scan,
+   * and the booking is created when that sequence finishes. Ordering it this way keeps the animation
+   * honest — nothing is committed while the customer is being shown "we are still deciding" — and
+   * dismissing the scan leaves no orphaned booking behind.
+   */
+  const [allocating, setAllocating] = useState(false);
+
+  // ---- Geo matching state ----
+  // null until the customer opts in; matching falls back to the service address meanwhile.
+  const [customerCoords, setCustomerCoords] = useState(null);
+  const [locating, setLocating] = useState(false);
+  const [locationNotice, setLocationNotice] = useState(null);
+  // 'idle' | 'granted' | 'denied' — drives the consent feedback under the button.
+  const [permissionState, setPermissionState] = useState('idle');
+  const [searchRadiusKm, setSearchRadiusKm] = useState(DEFAULT_MATCHING_RADIUS_KM);
+  // Subscribes so a worker going online (publishing a fix) refreshes the nearby list.
+  useWorkerLocations();
+
+  /**
+   * Asks for location consent, then resolves to the DEMO ANCHOR rather than the device's real fix.
+   *
+   * WHY THE REAL GPS CALL IS BYPASSED HERE: this walkthrough has to produce the same distances, the
+   * same scan and the same allocation every time it is shown, on any device, indoors, with or without
+   * a SIM. A live `getCurrentLocation()` gave none of that — on a desk in a building it usually timed
+   * out and fell through to the "your location could not be determined" notice visible in the review
+   * step, which made the feature look broken and made the nearby-worker distances unreproducible.
+   *
+   * The consent step is kept, and kept first, because that is the part that matters to the user: the
+   * prompt is explicit about what is being asked and declining is honoured (matching stays on the
+   * saved address, exactly as before). What changes is only where the coordinate comes from —
+   * DEMO_CUSTOMER_ANCHOR, i.e. the saved service address (Heritage Institute of Technology), which is
+   * also where the live-tracking route terminates. So "your current location" and the address on the
+   * invoice describe the same place, which is true for this demo account.
+   *
+   * The real service is still the single GPS entry point for everything else (the worker portal), and
+   * putting the anchor back to a live fix is a one-line change here.
+   */
+  const handleUseMyLocation = () => {
+    if (locating) return;
+    Alert.alert(
+      t('loc_permission_title'),
+      t('loc_permission_body'),
+      [
+        {
+          text: t('loc_permission_deny'),
+          style: 'cancel',
+          onPress: () => {
+            // Declining must never block the booking — matching simply keeps the saved address.
+            setCustomerCoords(null);
+            setPermissionState('denied');
+            setLocationNotice(t('loc_permission_denied_notice'));
+          },
+        },
+        {
+          text: t('loc_permission_allow'),
+          onPress: () => {
+            setLocationNotice(null);
+            setLocating(true);
+            // A short beat so the "Finding your location…" state is actually seen; an instant jump
+            // to "granted" reads as if nothing happened.
+            setTimeout(() => {
+              setCustomerCoords({ lat: DEMO_CUSTOMER_ANCHOR.lat, lng: DEMO_CUSTOMER_ANCHOR.lng });
+              setPermissionState('granted');
+              setLocating(false);
+            }, 1100);
+          },
+        },
+      ],
+      { cancelable: true },
+    );
+  };
+
+  /**
+   * Ranked nearby workers for the selected service.
+   *
+   * MEMOISED on the inputs that actually affect the outcome. Without this the whole pipeline would
+   * re-run on every keystroke in the description field, which is precisely the "run matching inside
+   * UI rendering" pattern to avoid.
+   *
+   * `realWorkers` is empty: the only cross-user worker query in this app is admin-scoped and blocked
+   * by RLS for a customer session, so a customer genuinely cannot enumerate real workers from the
+   * client. Demo workers therefore carry the demonstration — through the real engine, with real
+   * distances and real eligibility filters, not a bypass. When a server-side matching endpoint exists
+   * it is passed in here and the rest is unchanged.
+   */
+  const nearbyResult = useMemo(() => {
+    if (step !== 4) return null; // only computed on the review step
+    return findNearbyWorkers({
+      serviceId: selectedService,
+      latitude: customerCoords?.lat,
+      longitude: customerCoords?.lng,
+      radiusKm: searchRadiusKm,
+      realWorkers: [],
+    });
+  }, [step, selectedService, customerCoords, searchRadiusKm]);
   // AI diagnosis (Phase 9, Groq-backed). Photo/vision input wired in Phase 10a via
   // react-native-image-picker — a selected photo feeds getServiceDiagnosis's vision path.
   const [aiDiagnosis, setAiDiagnosis] = useState(null);
@@ -241,6 +350,12 @@ export default function BookingScreen({ navigation, route }) {
     setAiDiagnosis(null);
     setAiError(null);
     setDiagnosing(false);
+    // Consent and the allocation overlay are per-booking, so a fresh wizard asks again rather than
+    // inheriting the previous booking's granted state.
+    setAllocating(false);
+    setCustomerCoords(null);
+    setPermissionState('idle');
+    setLocationNotice(null);
     navigation.setParams({ service: undefined, desc: undefined });
   }, [navigation]);
 
@@ -753,6 +868,58 @@ export default function BookingScreen({ navigation, route }) {
             <Text style={styles.h2}>{t('review_confirm')}</Text>
             <Text style={styles.sub}>{t('fair_price_guarantee')}</Text>
 
+            {/* ---- GEO MATCHING ----
+                Consent is requested HERE, at the review step, and only when the customer taps the
+                button. Never on launch, and never as a precondition for booking: if it is declined,
+                matching falls back to the saved service address and the booking proceeds exactly as
+                before. See handleUseMyLocation for why the resolved coordinate is the demo anchor. */}
+            <Pressable
+              style={[styles.locBtn, locating && styles.locBtnBusy, permissionState === 'granted' && styles.locBtnGranted]}
+              onPress={handleUseMyLocation}
+              disabled={locating}
+              accessibilityRole="button"
+              accessibilityLabel={t('use_my_location')}
+            >
+              {locating ? (
+                <ActivityIndicator size="small" color={colors.primary700} />
+              ) : permissionState === 'granted' ? (
+                <Check size={16} color={colors.success700} strokeWidth={2.6} />
+              ) : (
+                <Navigation2 size={16} color={colors.primary700} strokeWidth={2.4} />
+              )}
+              <Text style={[styles.locBtnText, permissionState === 'granted' && styles.locBtnTextGranted]}>
+                {locating ? t('locating') : customerCoords ? t('location_set') : t('use_my_location')}
+              </Text>
+            </Pressable>
+
+            {/* Explicit confirmation that consent was recorded, and of WHICH place the granted fix
+                resolved to — so the customer is never left guessing what "current location" meant. */}
+            {permissionState === 'granted' && (
+              <View style={styles.locGranted}>
+                <ShieldCheck size={13} color={colors.success700} strokeWidth={2.4} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.locGrantedTitle}>{t('loc_permission_granted')}</Text>
+                  <Text style={styles.locGrantedText}>
+                    {t('loc_permission_granted_desc', { place: address.split(',')[0] })}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {locationNotice && (
+              <View style={styles.locNotice}>
+                <MapPin size={12} color={colors.warning700} strokeWidth={2.3} />
+                <Text style={styles.locNoticeText}>{locationNotice}</Text>
+              </View>
+            )}
+
+            <NearbyWorkersPanel
+              result={nearbyResult}
+              loading={locating}
+              radiusKm={searchRadiusKm}
+              onWidenRadius={setSearchRadiusKm}
+            />
+
             <View style={styles.billCard}>
               <View style={styles.billHead}>
                 <Receipt size={20} color={colors.primary600} />
@@ -773,6 +940,10 @@ export default function BookingScreen({ navigation, route }) {
                 {billing.distanceSurcharge > 0 && <BillRow label={t('distance_surcharge')} value={`₹${billing.distanceSurcharge}`} />}
                 <BillRow label={t('gst_line')} value={`₹${billing.gst}`} />
                 <BillRow label={t('welfare_cess')} value={`₹${billing.welfareCess}`} />
+                {/* Where that cess actually goes. Shown inline on the invoice rather than buried in
+                    terms: a 2% deduction with no stated destination is the kind of line a customer is
+                    right to distrust, and the split is small enough to just state. */}
+                <CessBreakdown cess={billing.welfareCess} />
                 <View style={styles.billDivider} />
                 <BillRow label={t('total_payable')} value={`₹${billing.total}`} total />
               </View>
@@ -801,12 +972,26 @@ export default function BookingScreen({ navigation, route }) {
             <ArrowRight size={18} color={colors.white} />
           </Pressable>
         ) : (
-          <Pressable style={styles.ctaMain} onPress={handleConfirm}>
+          <Pressable style={styles.ctaMain} onPress={() => setAllocating(true)} disabled={allocating}>
             <Check size={18} color={colors.white} />
             <Text style={styles.ctaMainText}>{t('confirm_booking_amount', { amount: billing.total })}</Text>
           </Pressable>
         )}
       </View>
+
+      {/* ---- Fairness allocation sequence ----
+          Runs between Confirm Booking and the confirmation screen: scans, compares the professionals
+          it finds, and picks one. onDone is what actually creates the booking. Dismissing it (Android
+          back) cancels cleanly and writes nothing, so the customer is never trapped in the overlay. */}
+      <GpsAllocationScanner
+        visible={allocating}
+        placeLabel={address.split(',')[0]}
+        onCancel={() => setAllocating(false)}
+        onDone={() => {
+          setAllocating(false);
+          handleConfirm();
+        }}
+      />
     </View>
   );
 }
@@ -1040,6 +1225,88 @@ function BillRow({ label, value, muted, total }) {
     <View style={styles.billRow}>
       <Text style={[styles.billRowLabel, total && styles.billRowTotalLabel]}>{label}</Text>
       <Text style={[styles.billRowValue, muted && styles.billRowMuted, total && styles.billRowTotalValue]}>{value}</Text>
+    </View>
+  );
+}
+
+/**
+ * The three-way destination of the welfare cess, shown under the cess line on the invoice.
+ *
+ * Reads splitWelfareCess from @data/cooperativeFund — the SAME function the admin dashboard's fund
+ * panel uses on the accumulated pool. That is the point of sharing it: the percentages a customer is
+ * shown here are provably the percentages the cooperative reports internally.
+ *
+ * Amounts carry paise because on one booking they genuinely are fractional (a ₹8 cess is
+ * ₹2.00 / ₹3.60 / ₹2.40). Rounding to whole rupees would break both the percentages and the total.
+ *
+ * The two cooperative divisions are nested under a "Cooperative fund" heading rather than listed flat
+ * alongside platform upkeep, because the grouping is the substantive distinction: 75% leaves the
+ * platform's hands entirely, and a flat list of three would hide that.
+ */
+function CessBreakdown({ cess }) {
+  const { t } = useLanguage();
+  const split = splitWelfareCess(cess);
+  const pct = (share) => `${Math.round(share * 100)}%`;
+
+  return (
+    <View style={styles.cessBox}>
+      <View style={styles.cessHead}>
+        <Split size={12} color={colors.primary700} strokeWidth={2.5} />
+        <Text style={styles.cessHeadText}>{t('cess_split_title')}</Text>
+      </View>
+
+      {/* Platform upkeep — the only part that stays with the app. */}
+      <CessLine
+        Icon={ServerCog}
+        tint={colors.primary100}
+        fg={colors.primary700}
+        label={t('cess_app_maintenance')}
+        pct={pct(FUND_SPLIT.appMaintenance)}
+        amount={split.appMaintenance}
+      />
+
+      {/* Cooperative fund — the remaining 75%, itself divided in two. */}
+      <View style={styles.cessGroup}>
+        <View style={styles.cessGroupHead}>
+          <HandCoins size={12} color={colors.success700} strokeWidth={2.5} />
+          <Text style={styles.cessGroupTitle} numberOfLines={1}>{t('cess_coop_fund')}</Text>
+          <Text style={styles.cessGroupPct}>{pct(COOPERATIVE_FUND_SHARE)}</Text>
+          <Text style={styles.cessGroupAmt}>₹{formatFundAmount(split.cooperativeFund)}</Text>
+        </View>
+        <View style={styles.cessNest}>
+          <CessLine
+            Icon={ShieldPlus}
+            tint={colors.danger100}
+            fg={colors.danger600}
+            label={t('cess_emergency')}
+            pct={pct(FUND_SPLIT.emergency)}
+            amount={split.emergency}
+          />
+          <CessLine
+            Icon={Wrench}
+            tint={colors.accent100}
+            fg={colors.accent700}
+            label={t('cess_tools')}
+            pct={pct(FUND_SPLIT.tools)}
+            amount={split.tools}
+          />
+        </View>
+      </View>
+
+      <Text style={styles.cessNote}>{t('cess_collective_note')}</Text>
+    </View>
+  );
+}
+
+function CessLine({ Icon, tint, fg, label, pct, amount }) {
+  return (
+    <View style={styles.cessLine}>
+      <View style={[styles.cessIcon, { backgroundColor: tint }]}>
+        <Icon size={11} color={fg} strokeWidth={2.4} />
+      </View>
+      <Text style={styles.cessLabel} numberOfLines={2}>{label}</Text>
+      <Text style={styles.cessPct}>{pct}</Text>
+      <Text style={styles.cessAmt}>₹{formatFundAmount(amount)}</Text>
     </View>
   );
 }
@@ -1309,6 +1576,56 @@ const styles = StyleSheet.create({
   billDivider: { height: 1, backgroundColor: colors.gray200, marginVertical: spacing.space1 },
   billNote: { fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular, marginTop: spacing.space3 },
 
+  // ---- Welfare cess destination (nested under the cess line) ----
+  cessBox: {
+    marginTop: spacing.space2,
+    marginBottom: spacing.space1,
+    padding: spacing.space3,
+    borderRadius: radii.radiusMd,
+    backgroundColor: colors.gray50,
+    // Left rail rather than a full border: it reads as a sub-item of the cess row above it instead
+    // of a separate card competing with the invoice.
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary200,
+  },
+  cessHead: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: spacing.space2 },
+  cessHeadText: {
+    flex: 1, fontSize: 10.5, color: colors.primary800,
+    fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold,
+  },
+  cessLine: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 3 },
+  cessIcon: {
+    width: 18, height: 18, borderRadius: radii.radiusFull,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  cessLabel: { flex: 1, fontSize: 10.5, color: colors.gray700, fontFamily: fontFamilies.interMedium, lineHeight: 14 },
+  cessPct: { fontSize: 9.5, color: colors.gray500, fontFamily: fontFamilies.interMedium, minWidth: 26, textAlign: 'right' },
+  cessAmt: {
+    fontSize: 10.5, color: colors.gray800, minWidth: 46, textAlign: 'right',
+    fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold,
+  },
+
+  cessGroup: {
+    marginTop: spacing.space2, paddingTop: spacing.space2,
+    borderTopWidth: 1, borderTopColor: colors.gray200,
+  },
+  cessGroupHead: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  cessGroupTitle: {
+    flex: 1, fontSize: 10.5, color: colors.success800,
+    fontFamily: fontFamilies.interBold, fontWeight: fontWeights.fwBold,
+  },
+  cessGroupPct: { fontSize: 9.5, color: colors.success600, fontFamily: fontFamilies.interMedium, minWidth: 26, textAlign: 'right' },
+  cessGroupAmt: {
+    fontSize: 10.5, color: colors.success700, minWidth: 46, textAlign: 'right',
+    fontFamily: fontFamilies.interBold, fontWeight: fontWeights.fwBold,
+  },
+  // Indented so the two divisions read as children of the cooperative-fund heading.
+  cessNest: { marginLeft: spacing.space3, marginTop: 2 },
+  cessNote: {
+    marginTop: spacing.space2, fontSize: 9.5, color: colors.gray500,
+    fontFamily: fontFamilies.interRegular, lineHeight: 13.5,
+  },
+
   ctaBar: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.space3,
     paddingHorizontal: spacing.space4, paddingTop: spacing.space3,
@@ -1371,6 +1688,45 @@ const styles = StyleSheet.create({
   detailHint: { fontSize: fontSizes.fsXs, color: colors.gray400, fontFamily: fontFamilies.interRegular, marginTop: 1 },
 
   mono: { fontFamily: 'monospace' },
+
+  // ---- Geo matching: opt-in location button + failure notice ----
+  locBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.space2,
+    marginTop: spacing.space4, paddingVertical: spacing.space3,
+    backgroundColor: colors.white, borderRadius: radii.radiusLg,
+    borderWidth: 1.5, borderColor: colors.primary200,
+  },
+  locBtnBusy: { opacity: 0.7 },
+  locBtnGranted: { borderColor: colors.success500, backgroundColor: colors.success50 },
+  locBtnTextGranted: { color: colors.success700 },
+  locGranted: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 6,
+    marginTop: spacing.space2, padding: spacing.space3,
+    borderRadius: radii.radiusMd, backgroundColor: colors.success50,
+    borderWidth: 1, borderColor: colors.success100,
+  },
+  locGrantedTitle: {
+    fontSize: fontSizes.fsXs, color: colors.success800,
+    fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold,
+  },
+  locGrantedText: {
+    fontSize: 11, color: colors.success700, marginTop: 1,
+    fontFamily: fontFamilies.interRegular, lineHeight: 15,
+  },
+  locBtnText: {
+    fontSize: fontSizes.fsSm, color: colors.primary700,
+    fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold,
+  },
+  locNotice: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 6,
+    marginTop: spacing.space2, padding: spacing.space3,
+    backgroundColor: colors.warning50, borderRadius: radii.radiusMd,
+    borderWidth: 1, borderColor: colors.warning200,
+  },
+  locNoticeText: {
+    flex: 1, fontSize: fontSizes.fsXs, color: colors.warning800,
+    fontFamily: fontFamilies.interRegular, lineHeight: 16,
+  },
 
   // Awaiting-worker notice (replaces the track CTA until a worker accepts)
   awaitingCard: {

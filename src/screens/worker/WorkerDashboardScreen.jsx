@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { View, Text, Pressable, Image, Alert, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -10,6 +10,8 @@ import { useAuth } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
 import { getBookingsByWorker } from '@data/mockBookings';
 import { useWorkerStatus, setWorkerAvailability } from '@data/workerStatus';
+import { setWorkerLocation, clearWorkerLocation } from '@data/workerLocations';
+import { getCurrentLocation, stopLocationWatch } from '@services/locationService';
 import { useWorkerRegistration, trainingModules, TRAINING_TOTAL_MODULES } from '@data/workerRegistration';
 import { useWorkerStats, acknowledgePayment, WEEKLY_HOUR_CAP } from '@data/workerStats';
 import { useBookings } from '@data/mockBookings';
@@ -78,6 +80,56 @@ export default function WorkerDashboardScreen({ navigation }) {
   // On approved leave (or at the hour cap) the worker is out of the pool regardless of the toggle.
   const isAvailable = available && !onLeave && !hourCapped;
   const [showHelpline, setShowHelpline] = useState(false);
+
+  /**
+   * Holds any active location watch so it can be torn down. Kept in a ref rather than state because
+   * changing it must not trigger a render, and because the unmount cleanup below needs the latest
+   * value without re-subscribing.
+   */
+  const locationWatchRef = useRef(null);
+
+  // Leaving this screen (or logging out) must never leave a location watch running.
+  useEffect(
+    () => () => {
+      stopLocationWatch(locationWatchRef.current);
+      locationWatchRef.current = null;
+    },
+    [],
+  );
+
+  /**
+   * Going online/offline, with location capture attached.
+   *
+   * WHY LOCATION IS TIED TO THIS TOGGLE: publishing a position is only meaningful while the worker is
+   * actually accepting work, and continuously tracking someone who has clocked off would be
+   * indefensible on a workers' cooperative app. So the fix is captured when they go ONLINE and
+   * cleared when they go OFFLINE — no background tracking, nothing while offline.
+   *
+   * AVAILABILITY IS SET FIRST, AND NEVER DEPENDS ON GPS. The worker's own intent must take effect
+   * whether or not location succeeds; a refused permission or an indoor GPS timeout would otherwise
+   * silently prevent them going online and cost them work. Location is best-effort on top: succeed
+   * and they gain distance-ranked jobs, fail and they still receive jobs exactly as before, just
+   * without the distance column. `force: true` bypasses the write throttle because a fresh fix at
+   * shift start is precisely when accuracy matters most.
+   */
+  const handleAvailabilityToggle = async (goingOnline) => {
+    setWorkerAvailability(workerId, goingOnline);
+
+    if (!goingOnline) {
+      stopLocationWatch(locationWatchRef.current);
+      locationWatchRef.current = null;
+      clearWorkerLocation(workerId);
+      return;
+    }
+
+    const result = await getCurrentLocation({ requestPermission: true });
+    if (result.ok) {
+      setWorkerLocation(workerId, result.coords, { force: true });
+    }
+    // A failure is deliberately silent here. The worker asked to go online, not to share location;
+    // interrupting that with an error dialog would punish them for a permission choice. The job feed
+    // explains the consequence (no distances) where it is actually relevant.
+  };
 
   const isNearOvertime = (worker.weekly_hours_worked || 0) >= 36;
   const isAtOvertime = (worker.weekly_hours_worked || 0) >= 40;
@@ -379,7 +431,7 @@ export default function WorkerDashboardScreen({ navigation }) {
                 Alert.alert(t('hours_capped_caps'), t('cannot_go_online_until_next_week', { cap: WEEKLY_HOUR_CAP }));
                 return;
               }
-              setWorkerAvailability(workerId, !available);
+              handleAvailabilityToggle(!available);
             }}
             disabled={onLeave}
             accessibilityRole="switch"
