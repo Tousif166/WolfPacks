@@ -6,7 +6,7 @@ import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 import {
   Calendar, Clock, Check, ArrowLeft, ArrowRight,
   Sparkles, Receipt, Navigation, ShieldCheck, Printer, ClipboardList,
-  Camera, ImagePlus, X, Copy, Home, Heart,
+  Camera, ImagePlus, X, Home, Heart,
   Users, Leaf, IndianRupee, ChevronRight, Bot,
   Umbrella, Zap, Sunrise, Sun, Sunset, MapPin,
 } from 'lucide-react-native';
@@ -32,9 +32,8 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  *    GST 18%, welfare cess 2%, distance surcharge 15% (when distant), total = sum. Ported verbatim.
  *  - weatherMultiplier = currentWeather.multiplier * service.weatherMultiplier.
  *  - The 4 wizard steps (choose → describe → schedule → review), quick problem tags per service,
- *    quick time-slot chips, addBooking() with resolveCustomerId(user.id), the OTP 4892 on the
- *    confirmation screen, and all the invoice line items (base / weather / distance / GST /
- *    welfare cess / total).
+ *    quick time-slot chips, addBooking() with resolveCustomerId(user.id), and all the invoice
+ *    line items (base / weather / distance / GST / welfare cess / total).
  *  - Route params: { service, desc } (web read ?service= & ?desc= query params). Preselecting a
  *    service jumps to step 2, and a maintenance-reminder desc is suffixed "(Scheduled Maintenance)".
  *
@@ -822,10 +821,9 @@ export default function BookingScreen({ navigation, route }) {
  *   4. Confetti bursts from around the icon.
  *   5. The rest of the content fades/slides in and settles.
  *
- * All booking values come from the EXISTING `booking` object; the OTP keeps the existing frontend
- * value (4892); the three actions call the handlers passed down unchanged.
+ * All booking values come from the EXISTING `booking` object; the three actions call the
+ * handlers passed down unchanged.
  */
-const CONFIRM_OTP = '4892'; // Existing frontend OTP value (unchanged; see file header).
 
 function BookingConfirmation({ booking: snapshot, insetsTop, onTrack, onShare, onViewBookings }) {
   const { t } = useLanguage();
@@ -841,7 +839,6 @@ function BookingConfirmation({ booking: snapshot, insetsTop, onTrack, onShare, o
   const ServiceIcon = serviceIcon(svc?.icon);
   const serviceColor = svc?.color || colors.primary600;
 
-  const [copied, setCopied] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
 
   // Animated values.
@@ -881,13 +878,6 @@ function BookingConfirmation({ booking: snapshot, insetsTop, onTrack, onShare, o
     // Run once on mount (a fresh confirmation always remounts with a new booking).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const handleCopy = () => {
-    // Visual-only copy feedback (no clipboard dependency is present in the project; adding one
-    // is out of scope for a frontend styling task). The OTP value itself is unchanged.
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1600);
-  };
 
   return (
     <ScreenContainer contentStyle={[styles.confirmContent, { paddingTop: insetsTop + spacing.space4 }]}>
@@ -949,35 +939,6 @@ function BookingConfirmation({ booking: snapshot, insetsTop, onTrack, onShare, o
           <DetailRow label={t('service_slot')} value={`${booking.date} at ${booking.time}`} />
           {/* Payment is collected AFTER the job is done — this is not a paid amount. */}
           <DetailRow label={t('payment')} value={`₹${booking.totalPrice}`} hint={t('pay_after_completion')} accent last />
-        </View>
-
-        {/* ---- OTP card ---- */}
-        <View style={styles.otpCard}>
-          <View style={styles.otpHeadRow}>
-            <View style={styles.otpShield}>
-              <ShieldCheck size={18} color={colors.success700} strokeWidth={2.2} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.otpTitle}>{t('start_service_otp')}</Text>
-              <Text style={styles.otpHint}>{t('otp_share_hint')}</Text>
-            </View>
-          </View>
-          <View style={styles.otpValueRow}>
-            <Text style={styles.otpCode}>{CONFIRM_OTP}</Text>
-            <PressableScale style={styles.otpCopyBtn} onPress={handleCopy} accessibilityLabel="Copy OTP">
-              {copied ? (
-                <>
-                  <Check size={15} color={colors.success700} strokeWidth={3} />
-                  <Text style={styles.otpCopyText}>{t('copied')}</Text>
-                </>
-              ) : (
-                <>
-                  <Copy size={15} color={colors.success700} strokeWidth={2.2} />
-                  <Text style={styles.otpCopyText}>{t('copy')}</Text>
-                </>
-              )}
-            </PressableScale>
-          </View>
         </View>
 
         {/* ---- Primary CTA — live tracking only exists once a worker has accepted ---- */}
@@ -1410,26 +1371,6 @@ const styles = StyleSheet.create({
   detailHint: { fontSize: fontSizes.fsXs, color: colors.gray400, fontFamily: fontFamilies.interRegular, marginTop: 1 },
 
   mono: { fontFamily: 'monospace' },
-
-  // OTP card
-  otpCard: {
-    width: '100%', marginTop: spacing.space4, backgroundColor: colors.success50,
-    borderRadius: radii.radiusXl, padding: spacing.space4, borderWidth: 1, borderColor: '#a7f3d0',
-  },
-  otpHeadRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.space3 },
-  otpShield: { width: 34, height: 34, borderRadius: radii.radiusMd, backgroundColor: colors.success100, alignItems: 'center', justifyContent: 'center' },
-  otpTitle: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.success800 },
-  otpHint: { fontSize: fontSizes.fsXs, color: colors.success700, fontFamily: fontFamilies.interRegular, marginTop: 2, lineHeight: 16 },
-  otpValueRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    marginTop: spacing.space3, paddingTop: spacing.space3, borderTopWidth: 1, borderTopColor: '#a7f3d0',
-  },
-  otpCode: { fontSize: fontSizes.fs3xl, fontWeight: fontWeights.fwExtrabold, fontFamily: fontFamilies.interExtraBold, color: colors.success700, letterSpacing: 8 },
-  otpCopyBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 8, paddingHorizontal: spacing.space3,
-    backgroundColor: colors.white, borderRadius: radii.radiusMd, borderWidth: 1, borderColor: '#a7f3d0',
-  },
-  otpCopyText: { fontSize: fontSizes.fsSm, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, color: colors.success700 },
 
   // Awaiting-worker notice (replaces the track CTA until a worker accepts)
   awaitingCard: {

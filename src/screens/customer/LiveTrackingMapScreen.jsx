@@ -340,18 +340,6 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
           <View style={[styles.progressFill, { width: `${progressPercent}%` }]} />
         </View>
 
-        {/* OTP */}
-        <View style={styles.otpCard}>
-          <View style={styles.otpIcon}>
-            <ShieldCheck size={18} color={colors.success700} strokeWidth={2.2} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.otpLabel}>{t('start_service_otp')}</Text>
-            <Text style={styles.otpHint}>{t('otp_hint')}</Text>
-          </View>
-          <Text style={styles.otpCode}>4892</Text>
-        </View>
-
         {/* Worker profile + actions */}
         <View style={styles.workerCard}>
           <View style={styles.workerAvatar}><Text style={styles.workerAvatarText}>{worker.name[0]}</Text></View>
@@ -486,16 +474,6 @@ const styles = StyleSheet.create({
 
   progressTrack: { height: 6, borderRadius: 3, backgroundColor: colors.gray200, overflow: 'hidden' },
   progressFill: { height: 6, borderRadius: 3, backgroundColor: colors.primary600 },
-
-  otpCard: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.space3,
-    padding: spacing.space3, backgroundColor: colors.success50, borderRadius: radii.radiusLg,
-    borderWidth: 1, borderColor: colors.success100,
-  },
-  otpIcon: { width: 36, height: 36, borderRadius: radii.radiusFull, backgroundColor: colors.success100, alignItems: 'center', justifyContent: 'center' },
-  otpLabel: { fontSize: fontSizes.fsXs, color: colors.success700, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, textTransform: 'uppercase', letterSpacing: 0.5 },
-  otpHint: { fontSize: 11, color: colors.gray500, fontFamily: fontFamilies.interRegular, marginTop: 1 },
-  otpCode: { fontSize: fontSizes.fs2xl, fontWeight: fontWeights.fwExtrabold, fontFamily: fontFamilies.interExtraBold, color: colors.success700, letterSpacing: 3 },
 
   workerCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3 },
   workerAvatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: colors.accent500, alignItems: 'center', justifyContent: 'center' },

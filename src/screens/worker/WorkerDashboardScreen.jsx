@@ -4,13 +4,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Power, Star, Briefcase, IndianRupee, Clock, BookOpen,
   AlertTriangle, Award, Umbrella, MapPin, UserRound, CalendarClock, Bell, LogOut, Bike, Check,
-  GraduationCap, FileText, CheckCircle2, FileClock,
+  GraduationCap, FileText, CheckCircle2, FileClock, UserCheck, BadgeCheck,
 } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
 import { getBookingsByWorker } from '@data/mockBookings';
 import { useWorkerStatus, setWorkerAvailability } from '@data/workerStatus';
-import { useWorkerRegistration, completeTraining, TRAINING_TOTAL_MODULES } from '@data/workerRegistration';
+import { useWorkerRegistration, trainingModules, TRAINING_TOTAL_MODULES } from '@data/workerRegistration';
 import { useWorkerStats, acknowledgePayment, WEEKLY_HOUR_CAP } from '@data/workerStats';
 import { useBookings } from '@data/mockBookings';
 import { ScreenContainer, SectionHeader, GradientBand } from '@components/app';
@@ -54,6 +54,8 @@ export default function WorkerDashboardScreen({ navigation }) {
   // Free-offline-training programme (only present when the worker enrolled instead of uploading
   // an experience certificate). `trainingBlocked` is what keeps job accepting locked until done.
   const training = worker.training;
+  // The named curriculum with per-module sign-off, read-only for the trainee.
+  const modules = trainingModules({ training });
   const trainingDone = training?.status === 'completed';
 
   // While an uploaded certificate awaits admin review the dashboard collapses to a single notice —
@@ -131,6 +133,21 @@ export default function WorkerDashboardScreen({ navigation }) {
         </View>
         <Text style={styles.greetName} numberOfLines={1}>{t('greet_namaste', { name: firstName })}</Text>
         <Text style={styles.greetSub}>{t('greet_ready')}</Text>
+
+        {/* STATUS PILL — same two mutually-exclusive states as the profile screen, from the same
+            derived values, so the worker cannot see "Verified" here and "Training in progress"
+            there. Rendered on the gradient, hence the translucent treatment. */}
+        {worker.verified ? (
+          <View style={styles.statusPill}>
+            <BadgeCheck size={13} color={colors.white} strokeWidth={2.5} />
+            <Text style={styles.statusPillText}>{t('verified_workers')}</Text>
+          </View>
+        ) : worker.inTraining ? (
+          <View style={styles.statusPill}>
+            <GraduationCap size={13} color={colors.white} strokeWidth={2.5} />
+            <Text style={styles.statusPillText}>{t('training_in_progress_title')}</Text>
+          </View>
+        ) : null}
       </GradientBand>
 
       <View style={styles.body}>
@@ -161,6 +178,29 @@ export default function WorkerDashboardScreen({ navigation }) {
               <Text style={styles.reviewMetaValue} numberOfLines={2}>{(worker.skills || []).join(', ') || '—'}</Text>
             </View>
             <Text style={styles.reviewLocked}>{t('features_locked_during_review')}</Text>
+          </View>
+        )}
+
+        {/* VERIFICATION UNDER PROCESS — shown while the worker is in the training programme.
+            
+            This is the state a worker lands in after an admin declines their certificate as
+            "Doesn't meet requirements": the certificate is rejected (so the review card above no
+            longer applies) and a training programme is attached instead. Previously that left the
+            dashboard with no notice at all explaining why jobs were unavailable — the only hint was
+            the progress card further down. This states it plainly, and states the exit condition. */}
+        {!certificatePending && worker.inTraining && (
+          <View style={styles.verifyingCard}>
+            <View style={styles.verifyingIcon}>
+              <GraduationCap size={20} color={colors.warning700} strokeWidth={2.3} />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.verifyingTitle}>{t('verification_under_process')}</Text>
+              <Text style={styles.verifyingBody}>{t('verification_under_process_desc')}</Text>
+              <View style={styles.verifyingLockRow}>
+                <AlertTriangle size={12} color={colors.warning700} strokeWidth={2.4} />
+                <Text style={styles.verifyingLockText}>{t('cannot_accept_while_training')}</Text>
+              </View>
+            </View>
           </View>
         )}
 
@@ -243,23 +283,65 @@ export default function WorkerDashboardScreen({ navigation }) {
                   })}
                 </Text>
 
+                {/* The named curriculum, read-only. A trainee can see exactly what they have been
+                    signed off on and by whom, but cannot tick anything themselves. */}
+                <View style={styles.modList}>
+                  {modules.map((m) => (
+                    <View key={m.index} style={styles.modRow}>
+                      {m.done ? (
+                        <CheckCircle2 size={14} color={colors.success700} strokeWidth={2.4} />
+                      ) : (
+                        <View style={styles.modDot} />
+                      )}
+                      <Text style={[styles.modName, m.done && styles.modNameDone]} numberOfLines={1}>
+                        {t(m.key)}
+                      </Text>
+                      {m.done && m.byName ? (
+                        <Text style={styles.modBy} numberOfLines={1}>
+                          {m.byName}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
+
                 <View style={styles.trainNote}>
                   <Text style={styles.trainNoteText}>{t('training_can_accept_after')}</Text>
                 </View>
 
-                {/* Demo affordance: a Seva Kendra instructor signs this off in a real deployment.
-                    Tapping it finishes the programme and issues the completion certificate. */}
-                <Pressable style={styles.trainBtn} onPress={() => completeTraining(user?.email)}>
-                  <CheckCircle2 size={15} color={colors.white} strokeWidth={2.4} />
-                  <Text style={styles.trainBtnText}>{t('training_mark_complete')}</Text>
-                </Pressable>
+                {/* WHO SIGNS THIS OFF. Previously the trainee had a "mark complete" button here,
+                    which made the programme meaningless — anyone could certify themselves into
+                    being employable. Progress is now marked by an assigned trainer (a verified
+                    worker) or the cooperative admin, so the trainee sees status only. */}
+                {/* A FINISHED programme is not "awaiting" anything, so it reports who signed it off
+                    instead. This line previously keyed only on trainerName, so a programme completed
+                    by an admin with no trainer ever assigned displayed "Awaiting trainer assignment"
+                    beside a Verified badge — two statements that flatly contradicted each other. */}
+                <View style={styles.trainerRow}>
+                  <UserCheck size={13} color={colors.primary700} strokeWidth={2.2} />
+                  <Text style={styles.trainerText} numberOfLines={2}>
+                    {training.trainerName
+                      ? t('training_your_trainer', { name: training.trainerName })
+                      : trainingDone && training.completedByName
+                        ? t('training_completed_by', { name: training.completedByName })
+                        : t('training_awaiting_trainer')}
+                  </Text>
+                </View>
               </>
             )}
           </View>
         )}
 
-        {/* Everything below is withheld while a certificate is under review. */}
-        {!certificatePending && (
+        {/* Everything below is withheld while a certificate is under review, AND while the worker is
+            still in training.
+
+            THE AVAILABILITY TOGGLE IS PART OF "BELOW". It used to render for a trainee, showing
+            "ONLINE — You're accepting new jobs", which directly contradicted the training lock: the
+            worker was told they were accepting jobs by one card and refused by another. Going online
+            is meaningless until they are actually eligible for work, so the whole block (toggle,
+            performance, benefits, active job, history) is withheld until the programme is finished
+            and the certificate issued — exactly as it already was for a pending certificate. */}
+        {!certificatePending && !worker.trainingBlocked && (
         <>
         {/* Availability */}
         <View style={[styles.availCard, (onLeave || hourCapped) ? styles.availLeave : isAvailable ? styles.availOn : styles.availOff]}>
@@ -623,6 +705,25 @@ const styles = StyleSheet.create({
   bellDot: { position: 'absolute', top: 9, right: 10, width: 7, height: 7, borderRadius: 4, backgroundColor: colors.white },
   greetName: { fontSize: fontSizes.fs2xl, color: colors.white, fontWeight: fontWeights.fwExtrabold, fontFamily: fontFamilies.interExtraBold, marginTop: spacing.space4 },
   greetSub: { fontSize: fontSizes.fsSm, color: 'rgba(255,255,255,0.9)', fontFamily: fontFamilies.interRegular, marginTop: 2 },
+  statusPill: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: spacing.space3,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: radii.radiusFull,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.32)',
+  },
+  statusPillText: {
+    fontSize: fontSizes.fsXs,
+    color: colors.white,
+    fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold,
+  },
 
   // ---- Body ----
   body: { paddingHorizontal: spacing.space4, paddingTop: spacing.space5 },
@@ -665,6 +766,35 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.fsSm, color: colors.gray900, fontFamily: fontFamilies.interMedium,
     marginBottom: spacing.space2,
   },
+  // ---- Verification-under-process banner (worker is in the training programme) ----
+  verifyingCard: {
+    flexDirection: 'row',
+    gap: spacing.space3,
+    padding: spacing.space4,
+    marginBottom: spacing.space4,
+    backgroundColor: colors.warning50,
+    borderRadius: radii.radiusXl,
+    borderWidth: 1,
+    borderColor: colors.warning200,
+  },
+  verifyingIcon: {
+    width: 40, height: 40, borderRadius: radii.radiusFull,
+    backgroundColor: colors.warning100, alignItems: 'center', justifyContent: 'center',
+  },
+  verifyingTitle: {
+    fontSize: fontSizes.fsBase, fontWeight: fontWeights.fwBold,
+    fontFamily: fontFamilies.interBold, color: colors.warning800,
+  },
+  verifyingBody: {
+    fontSize: fontSizes.fsXs, color: colors.gray600,
+    fontFamily: fontFamilies.interRegular, marginTop: 3, lineHeight: 17,
+  },
+  verifyingLockRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: spacing.space2 },
+  verifyingLockText: {
+    fontSize: fontSizes.fsXs, color: colors.warning700,
+    fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, flexShrink: 1,
+  },
+
   reviewLocked: {
     fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular,
     textAlign: 'center', lineHeight: 16,
@@ -712,6 +842,23 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.warning100,
   },
   trainNoteText: { fontSize: fontSizes.fsXs, color: colors.gray700, fontFamily: fontFamilies.interRegular, lineHeight: 16 },
+  // ---- Read-only module checklist shown to the trainee ----
+  modList: { gap: 6, marginTop: spacing.space3 },
+  modRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.space2 },
+  modDot: {
+    width: 14, height: 14, borderRadius: radii.radiusFull,
+    borderWidth: 1.5, borderColor: colors.gray300,
+  },
+  modName: { flex: 1, fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interRegular, color: colors.gray600 },
+  modNameDone: { color: colors.gray900, fontFamily: fontFamilies.interMedium },
+  modBy: { fontSize: 10, fontFamily: fontFamilies.interRegular, color: colors.gray400, maxWidth: 90 },
+  trainerRow: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.space2,
+    marginTop: spacing.space3, paddingTop: spacing.space3,
+    borderTopWidth: 1, borderTopColor: colors.gray100,
+  },
+  trainerText: { flex: 1, fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interMedium, color: colors.primary700 },
+
   trainBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.space2,
     paddingVertical: spacing.space3, borderRadius: radii.radiusMd, backgroundColor: colors.warning600,

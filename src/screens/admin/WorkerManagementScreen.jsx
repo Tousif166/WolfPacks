@@ -30,6 +30,10 @@ import {
   rejectCertificateAsUnqualified,
   skillNames,
   useWorkerRegistration,
+  getWorkerRegistration,
+  isTrainingBlocked,
+  isEkycVerified,
+  isCertificateApproved,
 } from '@data/workerRegistration';
 import { getWorkerList } from '@services/supabase';
 import { useLanguage } from '@context/LanguageContext';
@@ -97,7 +101,36 @@ function normaliseMock(w) {
     // just the seeded flag. onLeave is derived from their approved leave requests covering today.
     available: getWorkerAvailability(w.id, w.available ?? false),
     onLeave: isOnLeave(w.leaveRequests),
-    verified: w.verified ?? false, banned: w.banned ?? false, source: 'demo',
+    // VERIFIED / IN-TRAINING are DERIVED, not taken from the seed flag.
+    //
+    // This used to be a bare `verified: w.verified ?? false`, i.e. whatever mockWorkers hardcodes
+    // (w1/w2/w3 ship `true`), with no reference to the worker's registration record. If this row
+    // ever grew a Verified column it would have asserted "verified" for a worker who is mid-training
+    // — the same class of bug the worker profile had. Derived from isTrainingBlocked, the single
+    // predicate the worker portal uses, so the two surfaces cannot disagree.
+    //
+    // Joined by EMAIL because that is how the registration store is keyed. A demo worker with no
+    // record is not blocked, so the seed flag survives untouched.
+    ...deriveVerification(w.email, w.verified ?? false),
+    banned: w.banned ?? false, source: 'demo',
+  };
+}
+
+/**
+ * Verification state for one worker row, from the registration record.
+ *
+ * Mirrors src/screens/worker/workerData.js exactly: an unfinished programme blocks the badge, and a
+ * positive credential is still required to earn it. Kept in one place here so the two row builders
+ * below cannot drift apart.
+ */
+function deriveVerification(email, seedVerified) {
+  const reg = email ? getWorkerRegistration(email) : null;
+  const blocked = isTrainingBlocked(reg);
+  return {
+    verified:
+      !blocked &&
+      (seedVerified || isEkycVerified(reg) || isCertificateApproved(reg) || !!reg?.training?.certificateIssued),
+    inTraining: !!reg?.training && blocked,
   };
 }
 
@@ -110,7 +143,12 @@ function normaliseRealWorker(p) {
     id: p.id, name: p.full_name || '(Name not set)', phone: p.phone || '—',
     cooperative: null, city: null, state: null, joinDate,
     skills: [], certificates: [], totalJobs: 0, earnings: 0, rating: null, fairnessPosition: null,
-    available: null, verified: false, banned: false, source: 'registered',
+    available: null, banned: false, source: 'registered',
+    // Was hardcoded `verified: false`, which was wrong in the other direction — a registered worker
+    // who had genuinely completed training or e-KYC still read as unverified. Supabase does not
+    // return an email on this row, so `p.email` is usually absent and this falls back to the
+    // hardcoded-false behaviour; when an email IS present the real record is consulted.
+    ...deriveVerification(p.email, false),
   };
 }
 
@@ -253,14 +291,19 @@ export default function WorkerManagementScreen() {
   // Status precedence: Banned > On leave > Registered (no availability data) > Online / Offline.
   // On leave outranks Online because such a worker is out of the job pool even if their toggle
   // was left on.
+  // "In training" is inserted just below Banned and above On leave: such a worker cannot take work
+  // at all, so reporting them as Online/Offline would misrepresent the pool. Previously an admin had
+  // no way to see training state on this list.
   const statusVariant = (w) =>
     w.banned ? 'cancelled'
+      : w.inTraining ? 'pending'
       : w.onLeave ? 'pending'
       : w.source === 'registered' ? 'assigned'
       : w.available ? 'completed'
       : 'default';
   const statusLabel = (w) =>
     w.banned ? t('status_banned')
+      : w.inTraining ? t('training_in_progress_title')
       : w.onLeave ? t('on_leave')
       : w.source === 'registered' ? t('status_registered')
       : w.available ? t('status_online')

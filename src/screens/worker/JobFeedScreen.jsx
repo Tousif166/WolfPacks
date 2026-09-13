@@ -326,7 +326,7 @@ export default function JobFeedScreen() {
       return;
     }
     if (trainingBlocked) {
-      Alert.alert(t('training_in_progress_title'), t('training_cannot_accept'));
+      Alert.alert(t('training_in_progress_title'), t('cannot_accept_while_training'));
       return;
     }
     Alert.alert(
@@ -337,6 +337,26 @@ export default function JobFeedScreen() {
 
   const handleAccept = (job) => {
     setShowAcceptModal(false);
+
+    // Re-checked HERE, at the point of mutation, and not only on the Accept button.
+    //
+    // The button is already gated, but this handler is reached from the confirmation sheet, and
+    // eligibility can change in the gap between opening that sheet and confirming it — a trainer
+    // un-ticking a module, the weekly hour cap tripping, the dashboard availability toggle. Without
+    // this guard a sheet opened while eligible could still commit an acceptance the gate would now
+    // refuse, which for a trainee means taking paid work before being certified.
+    //
+    // Training is checked FIRST and reported explicitly, because it is the one blocker the worker
+    // cannot clear themselves — going online or waiting for the week to reset will not help, so a
+    // generic "unavailable" message would leave them stuck without knowing why.
+    if (trainingBlocked) {
+      Alert.alert(t('training_in_progress_title'), t('cannot_accept_while_training'));
+      return;
+    }
+    if (!canAcceptJobs) {
+      explainLocked();
+      return;
+    }
 
     if (job.isRealBooking) {
       // Attach this worker to the customer's booking and advance it to 'assigned'. That is what
@@ -349,6 +369,12 @@ export default function JobFeedScreen() {
         workerName: worker.name,
         workerRating: worker.rating,
         workerPhone: worker.phone,
+        // Lets the store re-verify the training gate itself rather than trusting this screen.
+        // The registration store is keyed by email, so this is the only usable join key.
+        workerEmail: user?.email || worker.email,
+        // The fully-resolved gate, which also covers server-side enrolment the store cannot see
+        // (worker_profiles.training_requested). See the note in acceptBooking.
+        trainingBlocked,
       });
       if (!result) {
         Alert.alert(t('finish_current_job_title'), t('finish_current_job_msg'));

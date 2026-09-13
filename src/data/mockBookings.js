@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { getJSON, setJSON } from '@storage/mmkv';
+import { getWorkerRegistration, isTrainingBlocked } from './workerRegistration';
 
 // Ported from e:\sahakar-seva-progress\src\data\mockBookings.js
 //
@@ -325,13 +326,51 @@ export const getPendingBookings = () =>
  * finishing the first. This is enforced here, not just in the UI, so it also holds when two
  * devices race to accept — the check runs against the same in-memory list every accept mutates.
  *
+ * A worker still in TRAINING cannot accept at all — enforced here, in the data layer, and not only
+ * by the job feed's button state. See the block comment inside.
+ *
  * Returns the updated booking, or null when: the id is unknown, the job was already taken by
- * someone else, OR this worker is already on an active job. The caller distinguishes these by
- * calling getWorkerActiveJobs() before showing its message.
+ * someone else, this worker is already on an active job, OR this worker has not cleared training.
+ * The caller distinguishes these by checking worker.trainingBlocked / getWorkerActiveJobs() before
+ * showing its message.
  */
 export function acceptBooking(bookingId, worker = {}) {
   const booking = mockBookings.find(b => b.id === bookingId);
   if (!booking || booking.workerId) return null;
+
+  /**
+   * TRAINING GATE — enforced in the data layer.
+   *
+   * Every other guard on this rule lived in JobFeedScreen (button state, lock banner, the handler's
+   * pre-check), which meant the rule was only as strong as that one screen. Any other caller — a
+   * sync path, a future admin "assign worker" feature, a script, a replayed action — could attach a
+   * trainee to a paid job without going near those checks. This mirrors the one-active-job rule
+   * directly below, which is deliberately enforced here for exactly the same reason.
+   *
+   * KEYED BY EMAIL because that is how the registration store is keyed (workerId is an opaque
+   * Supabase uuid or a seed id like 'w1', and no id -> email index exists). Callers pass
+   * `workerEmail`; if none is supplied the lookup yields no record and isTrainingBlocked(null)
+   * returns false, i.e. allowed. That fail-open is intentional and matches the documented exemption
+   * for workers with no registration record — the seeded demo worker and pre-existing accounts must
+   * keep working, and the node verification scripts pass no email. It is not a hole for real
+   * trainees: a worker who registered through the app always has a record under their email.
+   */
+  const accepterEmail = worker.workerEmail ?? worker.email ?? null;
+  if (accepterEmail && isTrainingBlocked(getWorkerRegistration(accepterEmail))) return null;
+
+  /**
+   * SECOND training signal, supplied by the caller.
+   *
+   * The local-record check above cannot see `worker_profiles.training_requested` — that lives in
+   * Supabase, and this store has no network access. A worker enrolled server-side but with no local
+   * record on this device would pass the check above, which is exactly the hole that let a freshly
+   * registered trainee accept jobs. buildWorkerData resolves both signals into `trainingBlocked`, so
+   * callers pass that resolved value here and the store refuses on either.
+   *
+   * Kept as a SEPARATE check rather than replacing the lookup above: a caller-supplied flag can be
+   * omitted or wrong, so the store keeps its own independent verification of the data it can reach.
+   */
+  if (worker.trainingBlocked === true) return null;
 
   // One-active-job rule — see hasActiveAcceptedJob for why it keys on acceptedAt.
   // resolveCustomerId is not involved here; workers are matched by raw id.

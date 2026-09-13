@@ -1,16 +1,34 @@
 import { useState } from 'react';
 import { View, Text, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
-import { BookOpen, Play, CheckCircle, Clock, MapPin, Award, FileText, WifiOff } from 'lucide-react-native';
+import { BookOpen, Play, CheckCircle, Clock, MapPin, Award, FileText, WifiOff, Users, GraduationCap } from 'lucide-react-native';
 import { ScreenContainer } from '@components/app';
 import { Chip, ChipRow } from '@components/app';
 import Badge from '@components/ui/Badge';
+import TraineeProgressSheet from '@components/app/TraineeProgressSheet';
+import { useAuth } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
+import {
+  useWorkerRegistration,
+  canTrain,
+  getTraineesForTrainer,
+  trainingModules,
+  MARKED_BY_TRAINER,
+} from '@data/workerRegistration';
+import { buildWorkerData } from '@screens/worker/workerData';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
 
 /**
- * WorkerTrainingPortalScreen — ported from web pages/worker/WorkerTrainingPortal.jsx. Course
- * cards (progress bars, cert-earned, enroll w/ 1.5s loading), filter chips, stats, Seva Kendra
- * list, and the offline WifiOff indicator. enroll setTimeout + filter logic preserved verbatim.
+ * WorkerTrainingPortalScreen — two sections:
+ *
+ * 1. MENTORSHIP (if the worker is verified): their assigned trainees + the unassigned pool.
+ *    Tapping a trainee opens the module checklist. This is what turns the free-offline-training
+ *    programme into something auditable — a trainee cannot self-certify, so verified workers
+ *    assess them.
+ *
+ * 2. COURSE CATALOGUE: optional upskilling courses (plumbing → electrical, etc), independent of
+ *    the gating programme. Preserved from the web portal verbatim. The catalogue and the mentorship
+ *    section have nothing to do with each other — one is optional learning, the other is fulfilling
+ *    a cooperative duty.
  */
 
 // Course titles are referenced by translation key (titleKey) and resolved via t() at render time,
@@ -36,10 +54,37 @@ const LEVEL_VARIANTS = { Beginner: 'success', Intermediate: 'warning', Advanced:
 const FILTERS = ['all', 'enrolled', 'offline', 'online', 'hybrid'];
 
 export default function WorkerTrainingPortalScreen() {
+  const { user, profile, workerProfile } = useAuth();
   const { t } = useLanguage();
+  useWorkerRegistration(user?.email);
+
+  const worker = buildWorkerData(user, profile, workerProfile);
+  const isTrainer = canTrain(worker);
+
   const [filter, setFilter] = useState('all');
   const [enrolling, setEnrolling] = useState(null);
   const [courses, setCourses] = useState(COURSES);
+
+  /**
+   * Trainees ASSIGNED TO THIS WORKER by the cooperative admin. Read-only allocation.
+   *
+   * THE UNASSIGNED POOL HAS BEEN REMOVED FROM THIS SCREEN. It used to list every trainee nobody had
+   * picked up, with a "Pick up" action that self-assigned the tapping worker as their trainer. Two
+   * things were wrong with that:
+   *
+   *   1. The pool included the VIEWING WORKER themselves, so a trainee could tap their own row and
+   *      become their own mentor — then tick off their own modules and certify themselves as
+   *      employable. That is exactly the self-certification this programme exists to prevent, and it
+   *      was observed in the field ("Your trainer: <own name>", modules signed by the trainee).
+   *   2. Even between two different workers, letting mentors self-select their trainees is an
+   *      allocation decision that belongs to the cooperative, not to whoever opens the tab first.
+   *
+   * Assignment is now solely the admin's responsibility, via the Training Oversight screen. The data
+   * layer refuses self-assignment independently (see assignTrainer), so removing the UI is defence in
+   * depth rather than the only guard.
+   */
+  const myTrainees = isTrainer ? getTraineesForTrainer(user?.email) : [];
+  const [selectedTrainee, setSelectedTrainee] = useState(null);
 
   const handleEnroll = (id) => {
     setEnrolling(id);
@@ -59,9 +104,37 @@ export default function WorkerTrainingPortalScreen() {
   );
 
   return (
-    <ScreenContainer>
-      <Text style={styles.h1}>🎓 {t('training_portal')}</Text>
-      <Text style={styles.sub}>{t('skill_development')}</Text>
+    <>
+      <ScreenContainer>
+      {/* ---- Mentorship section: visible only to verified workers ---- */}
+      {isTrainer && (
+        <View style={styles.mentorSection}>
+          <View style={styles.mentorHead}>
+            <Users size={20} color={colors.primary700} strokeWidth={2.2} />
+            <Text style={styles.mentorTitle}>{t('training_your_trainees')}</Text>
+          </View>
+
+          {myTrainees.length === 0 ? (
+            <View style={styles.emptyState}>
+              <GraduationCap size={32} color={colors.gray300} strokeWidth={2} />
+              <Text style={styles.emptyText}>{t('training_no_trainees_yet')}</Text>
+            </View>
+          ) : (
+            <View style={styles.traineeGroup}>
+              <Text style={styles.groupLabel}>{t('training_assigned_to_you')}</Text>
+              {myTrainees.map((tr) => (
+                <TraineeCard key={tr.email} trainee={tr} onPress={() => setSelectedTrainee(tr)} t={t} />
+              ))}
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* ---- Course catalogue (original portal content) ---- */}
+      <View style={isTrainer && styles.catalogueSpacer}>
+        <Text style={styles.h1}>🎓 {t('training_portal')}</Text>
+        <Text style={styles.sub}>{t('skill_development')}</Text>
+      </View>
 
       <View style={styles.internBadge}>
         <Award size={14} color={colors.warning800} />
@@ -173,6 +246,51 @@ export default function WorkerTrainingPortalScreen() {
         </View>
       </View>
     </ScreenContainer>
+
+    {/* The trainee module checklist: same component the admin uses, attribution is MARKED_BY_TRAINER */}
+    <TraineeProgressSheet
+      isOpen={!!selectedTrainee}
+      onClose={() => setSelectedTrainee(null)}
+      trainee={selectedTrainee}
+      markedBy={{
+        email: user?.email,
+        name: profile?.full_name || user?.email,
+        role: MARKED_BY_TRAINER,
+      }}
+    />
+    </>
+  );
+}
+
+/** A trainee card in the mentor section: shows progress, opens the module checklist on tap. */
+function TraineeCard({ trainee, unassigned, onPress, t }) {
+  const modules = trainingModules(trainee);
+  const done = modules.filter((m) => m.done).length;
+  const total = modules.length;
+  const pct = Math.round((done / total) * 100);
+
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.traineeCard, unassigned && styles.traineeCardUnassigned, pressed && styles.traineeCardPressed]}
+      onPress={onPress}
+    >
+      <View style={{ flex: 1 }}>
+        <Text style={styles.traineeEmail} numberOfLines={1}>
+          {trainee.email}
+        </Text>
+        <View style={styles.traineeBar}>
+          <View style={[styles.traineeBarFill, { width: `${pct}%` }]} />
+        </View>
+        <Text style={styles.traineeMeta}>
+          {t('training_modules_progress', { done, total })}
+        </Text>
+      </View>
+      {unassigned && (
+        <View style={styles.pickUpBadge}>
+          <Text style={styles.pickUpText}>{t('training_pick_up')}</Text>
+        </View>
+      )}
+    </Pressable>
   );
 }
 
@@ -186,6 +304,90 @@ function Stat({ value, label }) {
 }
 
 const styles = StyleSheet.create({
+  // ---- Mentorship section ----
+  mentorSection: {
+    backgroundColor: colors.primary50,
+    borderRadius: radii.radiusXl,
+    padding: spacing.space4,
+    marginBottom: spacing.space5,
+    borderWidth: 1,
+    borderColor: colors.primary100,
+  },
+  mentorHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.space2,
+    marginBottom: spacing.space3,
+  },
+  mentorTitle: {
+    fontSize: fontSizes.fsLg,
+    fontFamily: fontFamilies.interBold,
+    fontWeight: fontWeights.fwBold,
+    color: colors.primary900,
+  },
+  traineeGroup: { marginTop: spacing.space3 },
+  groupLabel: {
+    fontSize: fontSizes.fsSm,
+    fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold,
+    color: colors.gray700,
+    marginBottom: spacing.space2,
+  },
+  unassignedHead: { flexDirection: 'row', alignItems: 'center', gap: spacing.space2, marginBottom: spacing.space2 },
+  traineeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.space3,
+    backgroundColor: colors.white,
+    borderRadius: radii.radiusLg,
+    padding: spacing.space3,
+    marginTop: spacing.space2,
+    borderWidth: 1,
+    borderColor: colors.gray200,
+  },
+  traineeCardUnassigned: { borderColor: colors.warning200, backgroundColor: '#fffbf5' },
+  traineeCardPressed: { opacity: 0.7 },
+  traineeEmail: {
+    fontSize: fontSizes.fsSm,
+    fontFamily: fontFamilies.interMedium,
+    color: colors.gray900,
+    marginBottom: 4,
+  },
+  traineeBar: {
+    height: 5,
+    borderRadius: radii.radiusFull,
+    backgroundColor: colors.gray200,
+    overflow: 'hidden',
+    marginBottom: 4,
+  },
+  traineeBarFill: { height: '100%', backgroundColor: colors.primary600, borderRadius: radii.radiusFull },
+  traineeMeta: { fontSize: 10.5, fontFamily: fontFamilies.interRegular, color: colors.gray500 },
+  pickUpBadge: {
+    backgroundColor: colors.warning100,
+    borderRadius: radii.radiusMd,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  pickUpText: {
+    fontSize: 10,
+    fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold,
+    color: colors.warning700,
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: spacing.space5,
+    gap: spacing.space2,
+  },
+  emptyText: {
+    fontSize: fontSizes.fsSm,
+    fontFamily: fontFamilies.interRegular,
+    color: colors.gray500,
+    textAlign: 'center',
+  },
+  catalogueSpacer: { marginTop: spacing.space4 },
+
+  // ---- Course catalogue (original) ----
   h1: { fontSize: fontSizes.fs2xl, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.gray900 },
   sub: { fontSize: fontSizes.fsSm, color: colors.gray500, fontFamily: fontFamilies.interRegular, marginTop: 2 },
   internBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginTop: spacing.space3, backgroundColor: colors.accent100, paddingVertical: 4, paddingHorizontal: 10, borderRadius: radii.radiusFull },

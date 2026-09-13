@@ -86,6 +86,8 @@ export default function WorkerProfileScreen() {
   const rating = worker.rating;
   const totalJobs = worker.totalJobs;
   const isVerified = !!worker.verified;
+  // Mutually exclusive with isVerified by construction — see workerData.js.
+  const inTraining = !!worker.inTraining;
   const training = worker.training;
   // Use an existing avatar URL if the profile ever provides one; otherwise the initial avatar.
   const avatarUrl = isDemo ? demoMockWorker.avatar : workerProfile?.avatar_url || user?.avatar || null;
@@ -132,12 +134,20 @@ export default function WorkerProfileScreen() {
 
         <Text style={styles.name} numberOfLines={2}>{displayName}</Text>
 
-        {isVerified && (
+        {/* STATUS PILL — exactly one of Verified / In training is shown, never both and never
+            neither-when-in-training. Both read from buildWorkerData, which derives them from the
+            single isTrainingBlocked predicate, so this pill cannot contradict the job feed's lock. */}
+        {isVerified ? (
           <View style={styles.verifyPill}>
             <BadgeCheck size={13} color={colors.success700} strokeWidth={2.4} />
             <Text style={styles.verifyPillText}>{t('verified_workers')}</Text>
           </View>
-        )}
+        ) : inTraining ? (
+          <View style={styles.trainingPill}>
+            <GraduationCap size={13} color={colors.warning700} strokeWidth={2.4} />
+            <Text style={styles.trainingPillText}>{t('training_in_progress_title')}</Text>
+          </View>
+        ) : null}
 
         {professionLine && <Text style={styles.profession} numberOfLines={2}>{professionLine}</Text>}
 
@@ -361,6 +371,21 @@ const styles = StyleSheet.create({
     borderRadius: radii.radiusFull,
   },
   verifyPillText: { fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, color: colors.success700 },
+  // Amber rather than green: this is a legitimate in-progress state, not an error, and it must read
+  // as clearly distinct from the green Verified pill at a glance.
+  trainingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: spacing.space2,
+    paddingVertical: 3,
+    paddingHorizontal: 10,
+    backgroundColor: colors.warning50,
+    borderWidth: 1,
+    borderColor: colors.warning200,
+    borderRadius: radii.radiusFull,
+  },
+  trainingPillText: { fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, color: colors.warning700 },
   profession: { fontSize: fontSizes.fsSm, color: colors.gray600, fontFamily: fontFamilies.interMedium, marginTop: spacing.space2, textAlign: 'center' },
 
   statRow: {
