@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Modal as RNModalNative,
   View,
@@ -9,6 +9,7 @@ import {
   ScrollView,
   StyleSheet,
   Alert,
+  TextInput,
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -37,15 +38,47 @@ import {
   CalendarOff,
   GraduationCap,
   Filter,
+  Navigation2,
+  FileClock,
+  MessageSquare,
+  MessageSquareWarning,
+  ChevronRight,
   Map as MapIcon,
 } from 'lucide-react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { ScreenContainer, Confetti } from '@components/app';
+import {
+  ScreenContainer,
+  Confetti,
+  ComplaintAgainstYouCard,
+  AllocationComparisonPanel,
+  AllocationDiagnosisCard,
+} from '@components/app';
 import { useLanguage } from '@context/LanguageContext';
 import { useAuth } from '@context/AuthContext';
-import { getPendingBookings, acceptBooking } from '@data/mockBookings';
+import {
+  getPendingBookings,
+  acceptBooking,
+  getWorkerActiveJobs,
+  hasActiveAcceptedJob,
+  getWorkerPaidJobs,
+  departForJob,
+  markArrived,
+  completeJob,
+  hasArrived,
+  useBookings,
+} from '@data/mockBookings';
+import {
+  addWorkerComplaint,
+  getComplaintsAgainstWorker,
+  hasWorkerFeedbackFor,
+  useComplaints,
+} from '@data/mockComplaints';
+import { scheduleAdvisor } from '@services/complaintAdvisor';
 import { useWorkerStatus } from '@data/workerStatus';
 import { useWorkerRegistration } from '@data/workerRegistration';
+import { useWorkerLocations, getWorkerLocation, DEMO_CUSTOMER_ANCHOR } from '@data/workerLocations';
+import { calculateDistance, formatDistance } from '@utils/distance';
+import { useWorkerStats, WEEKLY_HOUR_CAP } from '@data/workerStats';
 import { buildWorkerData } from './workerData';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
 
@@ -82,6 +115,10 @@ const availableJobs = [
   { id: 'JOB004', serviceId: 'ac-repair', serviceName: 'AC Repair', description: 'AC not cooling properly, needs servicing', address: 'Chowbaga Road, Kolkata', date: '2026-09-02', time: '4:00 PM', estimatedPay: 400, customerName: 'Sita Devi', customerRating: 4.9, fairnessPosition: 4, urgency: 'medium' },
 ];
 
+// LanguageContext stores a code ('en'|'hi'|'bn'); the AI service wants the English language NAME.
+// Same mapping BookingScreen uses for getServiceDiagnosis.
+const LANG_NAME = { en: 'English', hi: 'Hindi', bn: 'Bengali' };
+
 // Priority presentation tokens (soft tinted pill + dot). Purely visual metadata, not buttons.
 const PRIORITY = {
   high: { labelKey: 'high_priority', bg: colors.danger50, fg: colors.danger600, dot: colors.danger500 },
@@ -111,6 +148,19 @@ function serviceStyle(name) {
  * Fields the booking record genuinely has are carried over; those it doesn't (customer rating,
  * an urgency grading) are left null so the UI omits them rather than inventing a value.
  */
+/**
+ * Where a job is, for distance purposes.
+ *
+ * Bookings store a human ADDRESS, not coordinates — the customer types a place, and nothing has ever
+ * geocoded it. So rather than invent a position per booking (which would be fabricated data), every
+ * job is anchored to the demo service location, which is what DEFAULT_ADDRESS actually refers to and
+ * where the live-tracking route terminates. The distance shown is therefore genuinely
+ * worker-to-service-area, computed from the worker's real GPS fix.
+ *
+ * When bookings later carry customer coordinates, this is the ONE function that changes.
+ */
+const jobLocation = () => DEMO_CUSTOMER_ANCHOR;
+
 const pendingToJob = (b) => ({
   id: b.id,
   // Carried through so the feed can filter by the worker's skill categories.
@@ -129,12 +179,18 @@ const pendingToJob = (b) => ({
 });
 
 export default function JobFeedScreen() {
-  const { t } = useLanguage();
+  const { t, resolvedLanguage } = useLanguage();
+  // Groq wants the English language NAME, not the stored code — same mapping BookingScreen uses.
+  const aiLanguageName = LANG_NAME[resolvedLanguage] || 'English';
   const { user, profile, workerProfile } = useAuth();
   // Identity of the worker who will be attached to a booking on accept.
   // Subscribes to the registration store so finishing training re-renders this screen (and
   // re-reads buildWorkerData) without needing a navigation bounce.
   useWorkerRegistration(user?.email);
+  // Subscribes to booking mutations so this screen reflects departure/arrival/completion at once.
+  useBookings();
+  // Subscribes to stat changes so hitting the weekly hour cap locks this feed immediately.
+  useWorkerStats();
 
   const worker = buildWorkerData(user, profile, workerProfile);
   const workerId = worker.mockWorkerId || user?.id;
@@ -145,11 +201,13 @@ export default function JobFeedScreen() {
     leaveRequests: worker.leaveRequests,
   });
 
-  // Third gate, on top of offline and on-leave: a worker who registered for the free offline
-  // training instead of uploading an experience certificate cannot take work until the programme
-  // is finished and their certificate is issued.
+  // Further gates on top of offline and on-leave:
+  //  - training: a worker who took the free offline training instead of uploading an experience
+  //    certificate cannot take work until the programme is finished and the certificate issued.
+  //  - hour cap: at the weekly ceiling the worker is out of the pool until the week resets.
   const trainingBlocked = worker.trainingBlocked;
-  const canAcceptJobs = statusAllows && !trainingBlocked;
+  const hourCapped = worker.hourCapped;
+  const canAcceptJobs = statusAllows && !trainingBlocked && !hourCapped;
 
   // Real, customer-placed jobs awaiting acceptance + the seeded demo jobs.
   const [pendingJobs, setPendingJobs] = useState(() => (canAcceptJobs ? getPendingBookings().map(pendingToJob) : []));
@@ -157,6 +215,21 @@ export default function JobFeedScreen() {
   const [selectedJob, setSelectedJob] = useState(null);
   const [showAcceptModal, setShowAcceptModal] = useState(false);
   const [accepted, setAccepted] = useState(null);
+  /**
+   * Which allocation comparison is expanded, or null for none.
+   *
+   * The three filter pills used to be a sort control (fairness order, an opt-in distance sort, and a
+   * dead decorative Earnings pill). They are now the entry points to the fairness explanation: each
+   * opens the comparison for that axis across the professionals the customer's scan turned up. One at
+   * a time, accordion-style, because two open tables push the actual job list off the screen.
+   */
+  const [comparison, setComparison] = useState(null); // 'overall' | 'distance' | 'earnings' | null
+  const toggleComparison = (view) => setComparison((current) => (current === view ? null : view));
+
+  // Subscribes to the location store so a fix captured on the dashboard shows up here immediately.
+  useWorkerLocations();
+  // null when this worker has no usable position — the per-job distance row degrades to hidden.
+  const workerLocation = getWorkerLocation(workerId);
 
   // The queue is only ever PULLED while the worker is online and off leave. Going offline freezes
   // it — whatever was listed stays on screen but every Accept is locked — and coming back online
@@ -177,14 +250,149 @@ export default function JobFeedScreen() {
   const skillIds = worker.skillIds || [];
   const matchesSkills = (job) => skillIds.length === 0 || !job.serviceId || skillIds.includes(job.serviceId);
 
-  const allJobs = [...pendingJobs, ...demoJobs];
-  const jobs = allJobs.filter(matchesSkills);
-  const hiddenByCategory = allJobs.length - jobs.length;
+  /**
+   * GEO ENRICHMENT — real distance per job, computed once per input change.
+   *
+   * useMemo is not a micro-optimisation here: this screen re-renders on a 1-second interval while any
+   * job is en-route, and recomputing Haversine for every card on every tick is exactly the
+   * "calculate distances on every render" pattern that has to be avoided. Keyed on the worker's
+   * coordinates and the job list, so it recomputes only when one of those actually changes.
+   *
+   * `distanceKm` is null when the worker has no fix. Null is rendered as "no distance row" rather
+   * than "0 km" — an unknown distance must never look like the closest possible job.
+   */
+  const allJobs = useMemo(() => {
+    const merged = [...pendingJobs, ...demoJobs];
+    if (!workerLocation) return merged.map((j) => ({ ...j, distanceKm: null }));
+    return merged.map((j) => {
+      const loc = jobLocation(j);
+      return {
+        ...j,
+        distanceKm: calculateDistance(workerLocation.lat, workerLocation.lng, loc.lat, loc.lng),
+      };
+    });
+  }, [pendingJobs, demoJobs, workerLocation]);
+
+  const bySkill = allJobs.filter(matchesSkills);
+  const hiddenByCategory = allJobs.length - bySkill.length;
+
+  /**
+   * The feed is always in FAIRNESS order. That is deliberate and is why the pills no longer re-sort
+   * it: on a cooperative platform the ordering must not become "closest worker grabs everything", or
+   * workers near the depot would take every job. Distance and earnings are things the worker can now
+   * INSPECT (see `comparison`) without being able to reorder the queue in their own favour.
+   */
+  const jobs = bySkill;
+
+  // ---- Jobs this worker has already taken ----
+  const activeJobs = getWorkerActiveJobs(workerId);
+  // A worker may hold only one job at a time. Delegated to the store so the button state and
+  // acceptBooking's enforcement share one definition — see hasActiveAcceptedJob for why it keys on
+  // acceptedAt rather than just an active status (the seed ships the demo worker mid-job, which
+  // previously locked Accept on a fresh install).
+  const hasActiveJob = hasActiveAcceptedJob(workerId);
+
+  // ---- Post-job feedback + complaints involving this worker ----
+  useComplaints();
+  // Finished, paid, and not yet reviewed by the worker — one submission per job.
+  const jobsAwaitingFeedback = getWorkerPaidJobs(workerId).filter((j) => !hasWorkerFeedbackFor(j.id));
+  const complaintsAgainstMe = getComplaintsAgainstWorker(workerId);
+
+  /**
+   * Kick the background Groq pass whenever this screen has a complaint with no suggestion yet.
+   * Fire-and-forget by design — see src/services/complaintAdvisor.js. Keyed on the number of
+   * queued items so it re-runs after a new complaint is filed, not on every render.
+   */
+  const awaitingAi = complaintsAgainstMe.filter((c) => c.aiStatus === 'idle').length;
+  useEffect(() => {
+    if (awaitingAi > 0) scheduleAdvisor(aiLanguageName);
+  }, [awaitingAi, aiLanguageName]);
+
+  /**
+   * Records the worker's view of a finished job.
+   *
+   * A rating alone is stored as feedback with no complaint raised; adding a subject escalates it to
+   * a complaint against the customer, which is what reaches the admin and the customer's portal.
+   */
+  const submitWorkerFeedback = (job, { rating, subject, description }) => {
+    const hasIssue = subject.trim().length > 0;
+    addWorkerComplaint({
+      customerId: job.customerId,
+      customerName: job.customerName,
+      workerId: job.workerId,
+      workerName: job.workerName || worker.name,
+      bookingId: job.id,
+      serviceName: job.serviceName,
+      // With no issue reported this is a rating-only record, kept so the job drops off the to-review
+      // list and the admin can still see the score.
+      subject: hasIssue ? subject.trim() : t('feedback_no_issues'),
+      description: description.trim(),
+      rating: rating || null,
+      priority: hasIssue ? 'medium' : 'low',
+    });
+    Alert.alert(
+      hasIssue ? t('complaint_filed_title') : t('feedback_thanks_title'),
+      hasIssue ? t('complaint_filed_msg') : t('worker_feedback_saved'),
+    );
+  };
+
+  /**
+   * While a job is en-route the "Job done" button must unlock on arrival, which is a time-based
+   * condition — nothing mutates to trigger a re-render. This ticks once a second, but ONLY while
+   * something is actually travelling, so an idle feed does no work. On the tick that arrival is
+   * reached the booking is advanced to 'in-progress', which is what the customer's timeline shows.
+   */
+  const [, setTick] = useState(0);
+  const travelling = activeJobs.some((j) => j.status === 'en-route');
+  useEffect(() => {
+    if (!travelling) return undefined;
+    const id = setInterval(() => {
+      activeJobs.forEach((j) => {
+        if (j.status === 'en-route' && hasArrived(j)) markArrived(j.id);
+      });
+      setTick((n) => n + 1);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [travelling, activeJobs]);
+
+  const handleDepart = (job) => {
+    Alert.alert(
+      t('leave_for_job'),
+      t('leave_for_job_warning'),
+      [
+        { text: t('cancel'), style: 'cancel' },
+        { text: t('confirm_depart'), onPress: () => departForJob(job.id) },
+      ],
+    );
+  };
+
+  const handleJobDone = (job) => {
+    if (!hasArrived(job)) {
+      Alert.alert(t('job_done'), t('job_done_locked_msg'));
+      return;
+    }
+    Alert.alert(
+      t('job_done'),
+      t('job_done_confirm_msg'),
+      [
+        { text: t('cancel'), style: 'cancel' },
+        { text: t('job_done'), onPress: () => completeJob(job.id) },
+      ],
+    );
+  };
 
   // Tapping a locked Accept explains what to do instead of silently doing nothing.
   const explainLocked = () => {
+    if (hourCapped) {
+      Alert.alert(t('hours_capped_caps'), t('cannot_go_online_until_next_week', { cap: WEEKLY_HOUR_CAP }));
+      return;
+    }
+    if (worker.certificatePending) {
+      Alert.alert(t('cert_under_review_title'), t('cert_under_review_cannot_accept'));
+      return;
+    }
     if (trainingBlocked) {
-      Alert.alert(t('training_in_progress_title'), t('training_cannot_accept'));
+      Alert.alert(t('training_in_progress_title'), t('cannot_accept_while_training'));
       return;
     }
     Alert.alert(
@@ -194,20 +402,55 @@ export default function JobFeedScreen() {
   };
 
   const handleAccept = (job) => {
-    setAccepted(job.id);
     setShowAcceptModal(false);
+
+    // Re-checked HERE, at the point of mutation, and not only on the Accept button.
+    //
+    // The button is already gated, but this handler is reached from the confirmation sheet, and
+    // eligibility can change in the gap between opening that sheet and confirming it — a trainer
+    // un-ticking a module, the weekly hour cap tripping, the dashboard availability toggle. Without
+    // this guard a sheet opened while eligible could still commit an acceptance the gate would now
+    // refuse, which for a trainee means taking paid work before being certified.
+    //
+    // Training is checked FIRST and reported explicitly, because it is the one blocker the worker
+    // cannot clear themselves — going online or waiting for the week to reset will not help, so a
+    // generic "unavailable" message would leave them stuck without knowing why.
+    if (trainingBlocked) {
+      Alert.alert(t('training_in_progress_title'), t('cannot_accept_while_training'));
+      return;
+    }
+    if (!canAcceptJobs) {
+      explainLocked();
+      return;
+    }
 
     if (job.isRealBooking) {
       // Attach this worker to the customer's booking and advance it to 'assigned'. That is what
       // makes the professional appear — and live tracking become available — on the customer side.
-      acceptBooking(job.id, {
+      // acceptBooking returns null if the one-active-job rule blocks it (or someone else grabbed
+      // the job first via sync). Only show the success overlay and remove the card when it actually
+      // took — otherwise the worker gets a false "accepted" for a job they did not get.
+      const result = acceptBooking(job.id, {
         workerId: worker.mockWorkerId || user?.id,
         workerName: worker.name,
         workerRating: worker.rating,
         workerPhone: worker.phone,
+        // Lets the store re-verify the training gate itself rather than trusting this screen.
+        // The registration store is keyed by email, so this is the only usable join key.
+        workerEmail: user?.email || worker.email,
+        // The fully-resolved gate, which also covers server-side enrolment the store cannot see
+        // (worker_profiles.training_requested). See the note in acceptBooking.
+        trainingBlocked,
       });
+      if (!result) {
+        Alert.alert(t('finish_current_job_title'), t('finish_current_job_msg'));
+        return;
+      }
+      setAccepted(job.id);
       setTimeout(() => setPendingJobs((p) => p.filter((x) => x.id !== job.id)), 1500);
     } else {
+      // Demo jobs are not real bookings, so apply the same one-at-a-time rule here by hand.
+      setAccepted(job.id);
       setTimeout(() => setDemoJobs((j) => j.filter((x) => x.id !== job.id)), 1500);
     }
   };
@@ -216,6 +459,42 @@ export default function JobFeedScreen() {
 
   return (
     <ScreenContainer>
+      {/* ---- Jobs already accepted by this worker: depart -> arrive -> done ---- */}
+      {activeJobs.length > 0 && (
+        <View style={styles.mineWrap}>
+          <Text style={styles.mineHeading}>{t('my_jobs')}</Text>
+          {activeJobs.map((job) => (
+            <ActiveJobCard
+              key={job.id}
+              job={job}
+              t={t}
+              onDepart={() => handleDepart(job)}
+              onDone={() => handleJobDone(job)}
+            />
+          ))}
+        </View>
+      )}
+
+      {/* ---- Complaints filed AGAINST this worker, with the AI suggestion ---- */}
+      {complaintsAgainstMe.map((c) => (
+        <ComplaintAgainstYouCard key={c.id} complaint={c} filedByLabelKey="filed_by_customer" />
+      ))}
+
+      {/* ---- Feedback on finished, paid jobs: rate the customer, optionally report an issue ---- */}
+      {jobsAwaitingFeedback.length > 0 && (
+        <View style={styles.fbWrap}>
+          <Text style={styles.mineHeading}>{t('rate_your_customers')}</Text>
+          {jobsAwaitingFeedback.map((job) => (
+            <WorkerFeedbackCard
+              key={job.id}
+              job={job}
+              t={t}
+              onSubmit={(payload) => submitWorkerFeedback(job, payload)}
+            />
+          ))}
+        </View>
+      )}
+
       {/* ---- Page header (dynamic count, not hardcoded) ---- */}
       <View style={styles.headerRow}>
         <View style={{ flex: 1 }}>
@@ -237,9 +516,13 @@ export default function JobFeedScreen() {
       {/* ---- Lock banner: explains why accepting is unavailable. Training outranks offline /
               on-leave because it is the blocker the worker must clear first. ---- */}
       {!canAcceptJobs && (
-        <View style={[styles.lockBanner, (onLeave || trainingBlocked) && styles.lockBannerLeave]}>
-          <View style={[styles.lockIcon, (onLeave || trainingBlocked) && styles.lockIconLeave]}>
-            {trainingBlocked ? (
+        <View style={[styles.lockBanner, (onLeave || trainingBlocked || hourCapped || worker.certificatePending) && styles.lockBannerLeave]}>
+          <View style={[styles.lockIcon, (onLeave || trainingBlocked || hourCapped || worker.certificatePending) && styles.lockIconLeave]}>
+            {worker.certificatePending ? (
+              <FileClock size={17} color={colors.warning700} strokeWidth={2.3} />
+            ) : hourCapped ? (
+              <Clock size={17} color={colors.warning700} strokeWidth={2.3} />
+            ) : trainingBlocked ? (
               <GraduationCap size={17} color={colors.warning700} strokeWidth={2.3} />
             ) : onLeave ? (
               <CalendarOff size={17} color={colors.warning700} strokeWidth={2.3} />
@@ -248,15 +531,30 @@ export default function JobFeedScreen() {
             )}
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.lockTitle, (onLeave || trainingBlocked) && styles.lockTitleLeave]}>
-              {trainingBlocked ? t('training_in_progress_title') : onLeave ? t('on_leave_jobs_title') : t('offline_jobs_title')}
+            <Text style={[styles.lockTitle, (onLeave || trainingBlocked || hourCapped || worker.certificatePending) && styles.lockTitleLeave]}>
+              {worker.certificatePending
+                ? t('cert_under_review_title')
+                : hourCapped
+                ? t('hours_capped_caps')
+                : trainingBlocked ? t('training_in_progress_title') : onLeave ? t('on_leave_jobs_title') : t('offline_jobs_title')}
             </Text>
             <Text style={styles.lockDesc}>
-              {trainingBlocked ? t('training_jobs_desc') : onLeave ? t('on_leave_jobs_desc') : t('offline_jobs_desc')}
+              {worker.certificatePending
+                ? t('cert_under_review_cannot_accept')
+                : hourCapped
+                ? t('cannot_go_online_until_next_week', { cap: WEEKLY_HOUR_CAP })
+                : trainingBlocked ? t('training_jobs_desc') : onLeave ? t('on_leave_jobs_desc') : t('offline_jobs_desc')}
             </Text>
           </View>
         </View>
       )}
+
+      {/* NOTE: the "Show distance to jobs" opt-in CTA that used to sit here has been removed. It
+              asked the worker to hand over GPS in order to unlock a distance column, and the Distance
+              control below no longer needs one — it now explains the allocation that already happened,
+              from the fixed scan roster, so there was nothing left for the permission to buy. Jobs
+              still show a real distance row whenever a position happens to be known (captured when
+              the worker goes online from the dashboard). */}
 
       {/* ---- Category note: makes the filter visible instead of jobs just silently missing ---- */}
       {skillIds.length > 0 && hiddenByCategory > 0 && (
@@ -268,23 +566,45 @@ export default function JobFeedScreen() {
         </View>
       )}
 
-      {/* ---- Sort / filter pills ---- */}
+      {/* ---- Allocation pills ----
+              All three are live now. Each opens the comparison for that axis across the professionals
+              the customer's scan found, which is what turns "assigned in a fairness queue" from a
+              slogan into something the worker can actually check. The queue order itself is not
+              user-controllable — see the note on `jobs`. */}
       <View style={styles.pillRow}>
-        {/* Reflects the real, existing behaviour: the list is fairness-ordered. */}
-        <View style={[styles.pill, styles.pillActive]}>
-          <Text style={[styles.pillText, styles.pillTextActive]}>{t('fairness_queue')}</Text>
-          <ChevronDown size={14} color={colors.success700} strokeWidth={2.4} />
-        </View>
-        {/* Distance / Earnings sorting do NOT exist in the app — shown disabled, wire to nothing. */}
-        <View style={[styles.pill, styles.pillDisabled]}>
-          <Text style={styles.pillTextDisabled}>{t('distance')}</Text>
-          <ChevronDown size={14} color={colors.gray300} strokeWidth={2.4} />
-        </View>
-        <View style={[styles.pill, styles.pillDisabled]}>
-          <Text style={styles.pillTextDisabled}>{t('earnings')}</Text>
-          <ChevronDown size={14} color={colors.gray300} strokeWidth={2.4} />
-        </View>
+        {[
+          { view: 'overall', label: t('fairness_queue') },
+          { view: 'distance', label: t('distance') },
+          { view: 'earnings', label: t('earnings') },
+        ].map(({ view, label }) => {
+          const open = comparison === view;
+          return (
+            <Pressable
+              key={view}
+              style={[styles.pill, open && styles.pillActive]}
+              onPress={() => toggleComparison(view)}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: open, selected: open }}
+              accessibilityLabel={label}
+            >
+              <Text style={[styles.pillText, open && styles.pillTextActive]}>{label}</Text>
+              <ChevronDown
+                size={14}
+                color={open ? colors.success700 : colors.gray500}
+                strokeWidth={2.4}
+                style={open ? styles.pillChevronOpen : undefined}
+              />
+            </Pressable>
+          );
+        })}
       </View>
+
+      {/* The expanded comparison. Hidden until a pill is tapped so the feed still opens on jobs. */}
+      {comparison ? (
+        <AllocationComparisonPanel view={comparison} youName={worker.name} style={styles.comparisonPanel} />
+      ) : (
+        <Text style={styles.pillHint}>{t('alloc_tap_hint')}</Text>
+      )}
 
       {/* ---- Job list ---- */}
       <View style={styles.list}>
@@ -325,6 +645,15 @@ export default function JobFeedScreen() {
                   <MapPin size={15} color={colors.gray400} strokeWidth={2} />
                   <Text style={styles.metaText} numberOfLines={2}>{job.address}</Text>
                 </View>
+                {/* REAL distance, from the worker's GPS fix to the job. Rendered only when actually
+                    known — a worker with no location sees no distance row rather than a
+                    misleading "0 km". Never shows coordinates, only an approximate distance. */}
+                {formatDistance(job.distanceKm) && (
+                  <View style={styles.metaItem}>
+                    <Navigation2 size={15} color={colors.success600} strokeWidth={2.2} />
+                    <Text style={styles.distanceText}>{t('km_away', { distance: formatDistance(job.distanceKm) })}</Text>
+                  </View>
+                )}
                 <View style={styles.metaSplit}>
                   <View style={styles.metaItemHalf}>
                     <Clock size={15} color={colors.gray400} strokeWidth={2} />
@@ -361,17 +690,22 @@ export default function JobFeedScreen() {
                   {/* Accept — green and live when online; grey and locked when offline / on leave,
                       in which case tapping explains how to unlock it instead of doing nothing. */}
                   <Pressable
-                    style={[styles.acceptBtn, !canAcceptJobs && styles.acceptBtnLocked]}
+                    style={[styles.acceptBtn, (!canAcceptJobs || hasActiveJob) && styles.acceptBtnLocked]}
                     onPress={() => {
                       if (!canAcceptJobs) {
                         explainLocked();
+                        return;
+                      }
+                      // One job at a time: don't even open the confirm sheet while a job is active.
+                      if (hasActiveJob) {
+                        Alert.alert(t('finish_current_job_title'), t('finish_current_job_msg'));
                         return;
                       }
                       setSelectedJob(job);
                       setShowAcceptModal(true);
                     }}
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: !canAcceptJobs }}
+                    accessibilityState={{ disabled: !canAcceptJobs || hasActiveJob }}
                     accessibilityLabel={t('accept_job')}
                   >
                     <CheckCircle size={16} color={canAcceptJobs ? colors.white : colors.gray500} strokeWidth={2.4} />
@@ -396,6 +730,7 @@ export default function JobFeedScreen() {
         isOpen={showAcceptModal}
         onClose={() => setShowAcceptModal(false)}
         onConfirm={handleAccept}
+        workerName={worker.name}
       />
     </ScreenContainer>
   );
@@ -413,7 +748,7 @@ export default function JobFeedScreen() {
  * breakdown, relative countdown, estimated duration, service-area flag, and a live route/map
  * (there's no valid map route for an unaccepted job — a static preview stands in instead).
  */
-function AcceptJobSheet({ job, isOpen, onClose, onConfirm }) {
+function AcceptJobSheet({ job, isOpen, onClose, onConfirm, workerName }) {
   const insets = useSafeAreaInsets();
   const { t } = useLanguage();
   const { height } = useWindowDimensions();
@@ -590,6 +925,21 @@ function AcceptJobSheet({ job, isOpen, onClose, onConfirm }) {
                 <WhyItem text={t('why_fairness', { pos: job.fairnessPosition })} />
                 <WhyItem text={t('why_skill', { service: job.serviceName })} last />
               </View>
+
+              {/* ---- ALLOCATION DIAGNOSIS ----
+                  The fairness system showing its working at the moment the worker decides. Same
+                  roster the customer's GPS scan animated, so the worker is reading the actual
+                  comparison that sent this job to them rather than a separate reassurance. The full
+                  per-axis tables are behind the feed's Distance / Earnings pills. */}
+              <AllocationDiagnosisCard
+                youName={workerName}
+                serviceName={job.serviceName}
+                fairnessPosition={job.fairnessPosition}
+              />
+
+              {/* Overall table inline as well: at the point of accepting, "I was compared with three
+                  others and here they are" is more convincing than a list of claims about them. */}
+              <AllocationComparisonPanel view="overall" youName={workerName} />
             </ScrollView>
 
             {/* Actions */}
@@ -645,7 +995,264 @@ function PressableScale({ children, style, onPress, accessibilityLabel }) {
   );
 }
 
+/**
+ * A job this worker has accepted, with the two lifecycle actions.
+ *
+ *  - "Leave for job" is offered only while the job is still 'assigned'; pressing it warns about
+ *    late-departure penalty points first, and on confirmation unlocks the customer's live tracking.
+ *  - "Job done" stays grey and inert until the worker has arrived at the address (per the demo
+ *    tracker), then turns green. Tapping it while locked explains why rather than doing nothing.
+ */
+function ActiveJobCard({ job, t, onDepart, onDone }) {
+  const { Icon, tint, fg } = serviceStyle(job.serviceName);
+  const arrived = hasArrived(job);
+  const departed = job.status !== 'assigned';
+
+  const stageKey = job.status === 'assigned'
+    ? 'stage_awaiting_departure'
+    : arrived ? 'stage_at_location' : 'stage_on_the_way';
+
+  return (
+    <View style={styles.mineCard}>
+      <View style={styles.mineTop}>
+        <View style={[styles.mineIcon, { backgroundColor: tint }]}>
+          <Icon size={18} color={fg} strokeWidth={2.3} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.mineService} numberOfLines={1}>{job.serviceName}</Text>
+          <Text style={styles.mineAddr} numberOfLines={1}>{job.address}</Text>
+        </View>
+        <View style={[styles.mineStage, arrived && styles.mineStageArrived]}>
+          <Text style={[styles.mineStageText, arrived && styles.mineStageTextArrived]}>{t(stageKey)}</Text>
+        </View>
+      </View>
+
+      <View style={styles.mineMetaRow}>
+        <Text style={styles.mineMeta}>#{job.id}</Text>
+        <Text style={styles.mineMeta}>•</Text>
+        <Text style={styles.mineMeta}>{job.customerName}</Text>
+        <Text style={styles.mineMeta}>•</Text>
+        <Text style={styles.mineMetaStrong}>₹{job.totalPrice}</Text>
+      </View>
+
+      <View style={styles.mineBtnRow}>
+        {/* Once departed this button is spent — it is replaced by a static "on the way" state so
+            the worker cannot re-trigger the journey. */}
+        {departed ? (
+          <View style={[styles.mineBtn, styles.mineBtnSpent]}>
+            <Navigation2 size={15} color={colors.gray500} strokeWidth={2.3} />
+            <Text style={styles.mineBtnSpentText}>{t('departed')}</Text>
+          </View>
+        ) : (
+          <Pressable style={[styles.mineBtn, styles.mineBtnDepart]} onPress={onDepart}>
+            <Navigation2 size={15} color={colors.white} strokeWidth={2.4} />
+            <Text style={styles.mineBtnDepartText}>{t('leave_for_job')}</Text>
+          </Pressable>
+        )}
+
+        <Pressable
+          style={[styles.mineBtn, arrived ? styles.mineBtnDone : styles.mineBtnDoneLocked]}
+          onPress={onDone}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: !arrived }}
+        >
+          <CheckCircle size={15} color={arrived ? colors.white : colors.gray500} strokeWidth={2.4} />
+          <Text style={arrived ? styles.mineBtnDoneText : styles.mineBtnDoneLockedText}>{t('job_done')}</Text>
+        </Pressable>
+      </View>
+
+      {!arrived && departed && <Text style={styles.mineHint}>{t('job_done_unlocks_on_arrival')}</Text>}
+    </View>
+  );
+}
+
+/**
+ * Worker's post-job feedback on a customer.
+ *
+ * Collapsed to a single row until tapped, because most finished jobs are unremarkable and a stack of
+ * expanded forms would bury the actual job feed. The complaint fields are a second, deliberate step
+ * inside that — rating a job should not feel like filing a grievance.
+ */
+function WorkerFeedbackCard({ job, t, onSubmit }) {
+  const [open, setOpen] = useState(false);
+  const [rating, setRating] = useState(0);
+  const [subject, setSubject] = useState('');
+  const [description, setDescription] = useState('');
+  const [issueOpen, setIssueOpen] = useState(false);
+
+  if (!open) {
+    return (
+      <Pressable style={styles.fbCollapsed} onPress={() => setOpen(true)}>
+        <View style={styles.fbIcon}>
+          <MessageSquare size={15} color={colors.primary700} strokeWidth={2.3} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.fbCollapsedTitle} numberOfLines={1}>
+            {t('review_job', { service: job.serviceName })}
+          </Text>
+          <Text style={styles.fbCollapsedSub} numberOfLines={1}>
+            {job.customerName} · #{job.id}
+          </Text>
+        </View>
+        <ChevronRight size={16} color={colors.gray400} />
+      </Pressable>
+    );
+  }
+
+  return (
+    <View style={styles.fbCard}>
+      <Text style={styles.fbTitle}>{t('review_job', { service: job.serviceName })}</Text>
+      <Text style={styles.fbSub}>{job.customerName} · #{job.id}</Text>
+
+      <Text style={styles.fbLabel}>{t('rate_the_customer')}</Text>
+      <View style={styles.fbStarRow}>
+        {[1, 2, 3, 4, 5].map((n) => (
+          <Pressable key={n} onPress={() => setRating(n)} hitSlop={6} accessibilityRole="button" accessibilityLabel={t('rate_n_stars', { n })}>
+            <Star
+              size={28}
+              color={n <= rating ? colors.accent500 : colors.gray300}
+              fill={n <= rating ? colors.accent500 : 'transparent'}
+              strokeWidth={2}
+            />
+          </Pressable>
+        ))}
+      </View>
+
+      {!issueOpen ? (
+        <Pressable style={styles.fbIssueToggle} onPress={() => setIssueOpen(true)}>
+          <MessageSquareWarning size={15} color={colors.danger600} strokeWidth={2.3} />
+          <Text style={styles.fbIssueToggleText}>{t('report_issue_with_customer')}</Text>
+        </Pressable>
+      ) : (
+        <View style={styles.fbIssueBox}>
+          <Text style={styles.fbIssueNote}>{t('worker_complaint_note')}</Text>
+          <TextInput
+            style={styles.fbInput}
+            value={subject}
+            onChangeText={setSubject}
+            placeholder={t('complaint_subject_placeholder')}
+            placeholderTextColor={colors.gray400}
+          />
+          <TextInput
+            style={[styles.fbInput, styles.fbTextarea]}
+            value={description}
+            onChangeText={setDescription}
+            placeholder={t('complaint_body_placeholder')}
+            placeholderTextColor={colors.gray400}
+            multiline
+            textAlignVertical="top"
+          />
+          <Pressable onPress={() => { setIssueOpen(false); setSubject(''); setDescription(''); }}>
+            <Text style={styles.fbCancelIssue}>{t('remove_complaint')}</Text>
+          </Pressable>
+        </View>
+      )}
+
+      <View style={styles.fbBtnRow}>
+        <Pressable style={styles.fbCancelBtn} onPress={() => setOpen(false)}>
+          <Text style={styles.fbCancelBtnText}>{t('cancel')}</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.fbSubmitBtn, rating === 0 && styles.fbSubmitBtnDisabled]}
+          disabled={rating === 0}
+          onPress={() => onSubmit({ rating, subject, description })}
+        >
+          <Text style={styles.fbSubmitBtnText}>{t('submit_feedback')}</Text>
+        </Pressable>
+      </View>
+      {rating === 0 && <Text style={styles.fbHint}>{t('rating_required_hint')}</Text>}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  // ---- Worker feedback on a finished job ----
+  fbWrap: { marginBottom: spacing.space5, gap: spacing.space2 },
+  fbCollapsed: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.space3,
+    backgroundColor: colors.surfaceWhite, borderRadius: radii.radiusLg, padding: spacing.space3,
+    borderWidth: 1, borderColor: colors.gray200,
+  },
+  fbIcon: {
+    width: 32, height: 32, borderRadius: radii.radiusFull, backgroundColor: colors.primary50,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  fbCollapsedTitle: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwSemibold, fontFamily: fontFamilies.interSemiBold, color: colors.gray900 },
+  fbCollapsedSub: { fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular, marginTop: 1 },
+  fbCard: {
+    backgroundColor: colors.surfaceWhite, borderRadius: radii.radiusXl, padding: spacing.space4,
+    borderWidth: 1.5, borderColor: colors.primary100, gap: spacing.space2, ...shadows.shadowSm,
+  },
+  fbTitle: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.gray900 },
+  fbSub: { fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular },
+  fbLabel: { fontSize: fontSizes.fsXs, color: colors.gray700, fontFamily: fontFamilies.interMedium, marginTop: spacing.space1 },
+  fbStarRow: { flexDirection: 'row', gap: spacing.space2, justifyContent: 'center', paddingVertical: spacing.space1 },
+  fbIssueToggle: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.space2,
+    paddingVertical: spacing.space2, borderRadius: radii.radiusMd,
+    borderWidth: 1.5, borderColor: colors.danger200, backgroundColor: colors.danger50,
+  },
+  fbIssueToggleText: { fontSize: fontSizes.fsXs, color: colors.danger700, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold },
+  fbIssueBox: {
+    gap: spacing.space2, padding: spacing.space3, borderRadius: radii.radiusMd,
+    borderWidth: 1.5, borderColor: colors.danger200, backgroundColor: colors.danger50,
+  },
+  fbIssueNote: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interRegular, lineHeight: 16 },
+  fbInput: {
+    paddingVertical: spacing.space2, paddingHorizontal: spacing.space3,
+    borderWidth: 1.5, borderColor: colors.gray200, borderRadius: radii.radiusMd,
+    fontSize: fontSizes.fsSm, fontFamily: fontFamilies.interRegular, color: colors.gray900,
+    backgroundColor: colors.surfaceWhite,
+  },
+  fbTextarea: { minHeight: 76 },
+  fbCancelIssue: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interMedium, textAlign: 'center' },
+  fbBtnRow: { flexDirection: 'row', gap: spacing.space2, marginTop: spacing.space1 },
+  fbCancelBtn: {
+    flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: spacing.space3,
+    borderRadius: radii.radiusMd, backgroundColor: colors.gray100,
+  },
+  fbCancelBtnText: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold },
+  fbSubmitBtn: {
+    flex: 2, alignItems: 'center', justifyContent: 'center', paddingVertical: spacing.space3,
+    borderRadius: radii.radiusMd, backgroundColor: colors.primary700,
+  },
+  fbSubmitBtnDisabled: { opacity: 0.5 },
+  fbSubmitBtnText: { fontSize: fontSizes.fsXs, color: colors.white, fontFamily: fontFamilies.interBold, fontWeight: fontWeights.fwBold },
+  fbHint: { fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular, textAlign: 'center' },
+
+  // ---- My jobs (accepted) ----
+  mineWrap: { marginBottom: spacing.space5, gap: spacing.space3 },
+  mineHeading: { fontSize: fontSizes.fsBase, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.gray900 },
+  mineCard: {
+    backgroundColor: colors.surfaceWhite, borderRadius: radii.radiusXl, padding: spacing.space4,
+    borderWidth: 1.5, borderColor: colors.primary100, gap: spacing.space3, ...shadows.shadowSm,
+  },
+  mineTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3 },
+  mineIcon: { width: 38, height: 38, borderRadius: radii.radiusFull, alignItems: 'center', justifyContent: 'center' },
+  mineService: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.gray900 },
+  mineAddr: { fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular, marginTop: 1 },
+  mineStage: { paddingVertical: 3, paddingHorizontal: spacing.space2, borderRadius: radii.radiusFull, backgroundColor: colors.warning50, borderWidth: 1, borderColor: colors.warning200 },
+  mineStageArrived: { backgroundColor: colors.success50, borderColor: colors.success100 },
+  mineStageText: { fontSize: 10, color: colors.warning800, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold },
+  mineStageTextArrived: { color: colors.success700 },
+  mineMetaRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.space2, flexWrap: 'wrap' },
+  mineMeta: { fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular },
+  mineMetaStrong: { fontSize: fontSizes.fsXs, color: colors.gray900, fontFamily: fontFamilies.interBold, fontWeight: fontWeights.fwBold },
+  mineBtnRow: { flexDirection: 'row', gap: spacing.space2 },
+  mineBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: spacing.space2, paddingVertical: spacing.space3, borderRadius: radii.radiusMd,
+  },
+  mineBtnDepart: { backgroundColor: colors.primary600 },
+  mineBtnDepartText: { color: colors.white, fontSize: fontSizes.fsXs, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold },
+  mineBtnSpent: { backgroundColor: colors.gray100 },
+  mineBtnSpentText: { color: colors.gray500, fontSize: fontSizes.fsXs, fontWeight: fontWeights.fwSemibold, fontFamily: fontFamilies.interSemiBold },
+  mineBtnDone: { backgroundColor: colors.success600 },
+  mineBtnDoneText: { color: colors.white, fontSize: fontSizes.fsXs, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold },
+  mineBtnDoneLocked: { backgroundColor: colors.gray200 },
+  mineBtnDoneLockedText: { color: colors.gray500, fontSize: fontSizes.fsXs, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold },
+  mineHint: { fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular, textAlign: 'center' },
+
   // ---- Header ----
   headerRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.space3, marginBottom: spacing.space4 },
   h1: { fontSize: fontSizes.fs3xl, fontWeight: fontWeights.fwExtrabold, fontFamily: fontFamilies.interExtraBold, color: colors.gray900, letterSpacing: -0.5 },
@@ -695,8 +1302,14 @@ const styles = StyleSheet.create({
   },
   skillNoteText: { flex: 1, fontSize: fontSizes.fsXs, color: colors.primary700, fontFamily: fontFamilies.interMedium, lineHeight: 15 },
 
-  // ---- Sort / filter pills ----
-  pillRow: { flexDirection: 'row', gap: spacing.space2, marginBottom: spacing.space4, flexWrap: 'wrap' },
+  // ---- Allocation pills + expanded comparison ----
+  pillRow: { flexDirection: 'row', gap: spacing.space2, marginBottom: spacing.space3, flexWrap: 'wrap' },
+  pillChevronOpen: { transform: [{ rotate: '180deg' }] },
+  pillHint: {
+    fontSize: fontSizes.fsXs, color: colors.gray500,
+    fontFamily: fontFamilies.interRegular, marginBottom: spacing.space4,
+  },
+  comparisonPanel: { marginBottom: spacing.space4 },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -709,10 +1322,8 @@ const styles = StyleSheet.create({
     borderColor: colors.gray200,
   },
   pillActive: { backgroundColor: colors.success50, borderColor: '#6ee7b7' },
-  pillDisabled: { backgroundColor: colors.gray50, borderColor: colors.gray100 },
   pillText: { fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, color: colors.gray600 },
   pillTextActive: { color: colors.success700 },
-  pillTextDisabled: { fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interMedium, color: colors.gray400 },
 
   // ---- List / card ----
   list: { gap: spacing.space4 },
@@ -766,6 +1377,15 @@ const styles = StyleSheet.create({
   metaSplit: { flexDirection: 'row', gap: spacing.space3, flexWrap: 'wrap' },
   metaItemHalf: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1, minWidth: '45%' },
   metaText: { fontSize: fontSizes.fsSm, color: colors.gray600, fontFamily: fontFamilies.interMedium, flexShrink: 1 },
+  // Green + semibold: distance is a decision-grade signal for a worker choosing a job, so it reads
+  // stronger than the surrounding grey metadata.
+  distanceText: {
+    fontSize: fontSizes.fsSm,
+    color: colors.success700,
+    fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold,
+    flexShrink: 1,
+  },
   ratingChip: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingVertical: 2, paddingHorizontal: 6, backgroundColor: colors.accent50, borderRadius: radii.radiusFull },
   ratingText: { fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interBold, fontWeight: fontWeights.fwBold, color: colors.accent700 },
 

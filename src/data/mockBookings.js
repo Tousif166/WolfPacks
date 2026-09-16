@@ -1,4 +1,6 @@
+import { useSyncExternalStore } from 'react';
 import { getJSON, setJSON } from '@storage/mmkv';
+import { getWorkerRegistration, isTrainingBlocked } from './workerRegistration';
 
 // Ported from e:\sahakar-seva-progress\src\data\mockBookings.js
 //
@@ -202,7 +204,19 @@ function loadStoredBookings() {
 export let mockBookings = loadStoredBookings();
 
 export function addBooking(bookingData) {
-  const newId = `BK00${mockBookings.length + 1}`;
+  // GLOBALLY UNIQUE, not just locally sequential.
+  //
+  // This used to be `BK00${mockBookings.length + 1}`, which was fine while bookings never left the
+  // device. Once they sync through Supabase it is a data-loss bug: two devices each holding 5
+  // bookings would both mint 'BK006', and the second upsert would overwrite the first person's
+  // booking instead of adding one. The sequence number is kept for readability (support staff read
+  // these out loud) and made unique by a base36 time slice plus two random characters.
+  //
+  // Safe for mockRoutes.getRouteForBooking, which does parseInt(id.replace('BK','')) — parseInt
+  // stops at the first non-digit, so 'BK006-3x8ak2' still resolves to 6.
+  const newId = `BK${String(mockBookings.length + 1).padStart(3, '0')}-${Date.now()
+    .toString(36)
+    .slice(-4)}${Math.random().toString(36).slice(2, 4)}`;
   // Resolve the customer id through the same canonicalisation used for reads.
   // This ensures a booking created by the demo customer is stored as 'c1' and
   // remains visible on any subsequent read.  Real Supabase UUIDs are unchanged.
@@ -246,11 +260,7 @@ export function addBooking(bookingData) {
   };
 
   mockBookings.unshift(newBooking);
-  try {
-    setJSON(STORAGE_KEY, mockBookings);
-  } catch (e) {
-    console.error('Error saving booking to storage:', e);
-  }
+  commit();
   return newBooking;
 }
 
@@ -311,25 +321,70 @@ export const getPendingBookings = () =>
  * worker's identity and advances the status 'booked' -> 'assigned', which is what unlocks live
  * tracking on the customer side (getActiveBooking / ACTIVE_STATUSES include 'assigned').
  *
- * Returns the updated booking, or null when the id is unknown or the job was already taken
- * (so the caller can tell the worker someone else got there first).
+ * A worker may hold only ONE job at a time. If they already have an active job (assigned,
+ * en-route or in-progress) the acceptance is refused so they cannot pick up a second before
+ * finishing the first. This is enforced here, not just in the UI, so it also holds when two
+ * devices race to accept — the check runs against the same in-memory list every accept mutates.
+ *
+ * A worker still in TRAINING cannot accept at all — enforced here, in the data layer, and not only
+ * by the job feed's button state. See the block comment inside.
+ *
+ * Returns the updated booking, or null when: the id is unknown, the job was already taken by
+ * someone else, this worker is already on an active job, OR this worker has not cleared training.
+ * The caller distinguishes these by checking worker.trainingBlocked / getWorkerActiveJobs() before
+ * showing its message.
  */
 export function acceptBooking(bookingId, worker = {}) {
   const booking = mockBookings.find(b => b.id === bookingId);
   if (!booking || booking.workerId) return null;
 
-  booking.workerId = worker.workerId ?? worker.id ?? null;
+  /**
+   * TRAINING GATE — enforced in the data layer.
+   *
+   * Every other guard on this rule lived in JobFeedScreen (button state, lock banner, the handler's
+   * pre-check), which meant the rule was only as strong as that one screen. Any other caller — a
+   * sync path, a future admin "assign worker" feature, a script, a replayed action — could attach a
+   * trainee to a paid job without going near those checks. This mirrors the one-active-job rule
+   * directly below, which is deliberately enforced here for exactly the same reason.
+   *
+   * KEYED BY EMAIL because that is how the registration store is keyed (workerId is an opaque
+   * Supabase uuid or a seed id like 'w1', and no id -> email index exists). Callers pass
+   * `workerEmail`; if none is supplied the lookup yields no record and isTrainingBlocked(null)
+   * returns false, i.e. allowed. That fail-open is intentional and matches the documented exemption
+   * for workers with no registration record — the seeded demo worker and pre-existing accounts must
+   * keep working, and the node verification scripts pass no email. It is not a hole for real
+   * trainees: a worker who registered through the app always has a record under their email.
+   */
+  const accepterEmail = worker.workerEmail ?? worker.email ?? null;
+  if (accepterEmail && isTrainingBlocked(getWorkerRegistration(accepterEmail))) return null;
+
+  /**
+   * SECOND training signal, supplied by the caller.
+   *
+   * The local-record check above cannot see `worker_profiles.training_requested` — that lives in
+   * Supabase, and this store has no network access. A worker enrolled server-side but with no local
+   * record on this device would pass the check above, which is exactly the hole that let a freshly
+   * registered trainee accept jobs. buildWorkerData resolves both signals into `trainingBlocked`, so
+   * callers pass that resolved value here and the store refuses on either.
+   *
+   * Kept as a SEPARATE check rather than replacing the lookup above: a caller-supplied flag can be
+   * omitted or wrong, so the store keeps its own independent verification of the data it can reach.
+   */
+  if (worker.trainingBlocked === true) return null;
+
+  // One-active-job rule — see hasActiveAcceptedJob for why it keys on acceptedAt.
+  // resolveCustomerId is not involved here; workers are matched by raw id.
+  const accepterId = worker.workerId ?? worker.id ?? null;
+  if (accepterId && hasActiveAcceptedJob(accepterId)) return null;
+
+  booking.workerId = accepterId;
   booking.workerName = worker.workerName ?? worker.name ?? null;
   booking.workerRating = worker.workerRating ?? worker.rating ?? null;
   booking.workerPhone = worker.workerPhone ?? worker.phone ?? null;
   booking.status = 'assigned';
   booking.acceptedAt = new Date().toISOString();
 
-  try {
-    setJSON(STORAGE_KEY, mockBookings);
-  } catch (e) {
-    console.error('Error saving accepted booking to storage:', e);
-  }
+  commit();
   return booking;
 }
 
@@ -341,3 +396,192 @@ export const getActiveBooking = (customerId) => {
          ['en-route', 'in-progress', 'assigned'].includes(b.status)
   );
 };
+
+// ---------------------------------------------------------------------------
+// Job lifecycle: depart -> arrive -> done -> pay -> rate
+//
+// These drive the worker's two job-card actions and the customer's tracking/payment gates. They
+// reuse the EXISTING status pipeline (booked -> assigned -> en-route -> in-progress -> completed)
+// rather than inventing statuses, so every existing status colour map, filter and timeline keeps
+// working:
+//
+//   worker taps "Leave for job"  -> assigned    -> en-route     (unlocks customer live tracking)
+//   worker reaches the address   -> en-route    -> in-progress  (unlocks "Job done")
+//   worker taps "Job done"       -> in-progress -> completed    (raises payment due)
+//
+// Payment and feedback are stored as FIELDS on the booking (paymentStatus/paidAt/paymentMethod,
+// rating/feedback), not as statuses — a completed job that is unpaid is still 'completed', and
+// overloading the status would break the existing history filters.
+// ---------------------------------------------------------------------------
+
+/**
+ * How long the demo worker "travels" after leaving, in ms.
+ *
+ * The customer-facing map runs a scripted ~7-minute journey, but a demo cannot ask someone to
+ * wait seven minutes to see the next step, so the worker's arrival is compressed. Arrival is
+ * derived from the elapsed clock rather than requiring the customer to open the map — otherwise
+ * the worker's "Job done" button could never unlock if nobody watched the tracking screen.
+ */
+export const DEMO_TRAVEL_MS = 25000;
+
+// Bumped on every mutation so screens can subscribe and re-render instead of only refreshing on
+// focus. Needed because the worker and customer act on the same booking from different tabs.
+let bookingsVersion = 0;
+const bookingListeners = new Set();
+
+export function subscribeBookings(listener) {
+  bookingListeners.add(listener);
+  return () => bookingListeners.delete(listener);
+}
+
+export function getBookingsVersion() {
+  return bookingsVersion;
+}
+
+function commit() {
+  try {
+    setJSON(STORAGE_KEY, mockBookings);
+  } catch (e) {
+    console.error('Error saving bookings to storage:', e);
+  }
+  bookingsVersion += 1;
+  bookingListeners.forEach((l) => l());
+}
+
+/** Worker has set off. Only valid from 'assigned'. */
+export function departForJob(bookingId) {
+  const b = getBookingById(bookingId);
+  if (!b || b.status !== 'assigned') return null;
+  b.status = 'en-route';
+  b.enRouteAt = new Date().toISOString();
+  commit();
+  return b;
+}
+
+/**
+ * True once the worker should be considered at the customer's address. Either the tracking
+ * simulation explicitly reported arrival, or enough time has passed since departure.
+ */
+export function hasArrived(booking, now = Date.now()) {
+  if (!booking) return false;
+  if (booking.arrivedAt) return true;
+  if (booking.status === 'in-progress' || booking.status === 'completed') return true;
+  if (!booking.enRouteAt) return false;
+  return now - new Date(booking.enRouteAt).getTime() >= DEMO_TRAVEL_MS;
+}
+
+/** Registers arrival at the address. Idempotent — safe to call from the map sim repeatedly. */
+export function markArrived(bookingId) {
+  const b = getBookingById(bookingId);
+  if (!b || b.status !== 'en-route') return null;
+  b.status = 'in-progress';
+  b.arrivedAt = new Date().toISOString();
+  commit();
+  return b;
+}
+
+/**
+ * Worker marks the job finished, which raises the payment as due on the customer side.
+ * `durationHours` is what gets added to the worker's weekly hours.
+ */
+export function completeJob(bookingId, { durationHours = 2 } = {}) {
+  const b = getBookingById(bookingId);
+  if (!b || !['in-progress', 'en-route'].includes(b.status)) return null;
+  b.status = 'completed';
+  b.completedAt = new Date().toISOString();
+  b.paymentStatus = 'due';
+  b.durationHours = durationHours;
+  commit();
+  return b;
+}
+
+/** Records a (simulated) payment against a completed job. */
+export function payBooking(bookingId, { method = 'upi' } = {}) {
+  const b = getBookingById(bookingId);
+  if (!b) return null;
+  b.paymentStatus = 'paid';
+  b.paymentMethod = method;
+  b.paidAt = new Date().toISOString();
+  commit();
+  return b;
+}
+
+/** Stores the customer's star rating and written feedback on the booking. */
+export function saveBookingFeedback(bookingId, { rating = null, feedback = '' } = {}) {
+  const b = getBookingById(bookingId);
+  if (!b) return null;
+  if (rating != null) b.rating = rating;
+  if (feedback) b.feedback = feedback;
+  commit();
+  return b;
+}
+
+/** Completed jobs the customer still owes money on — drives the payment-due block. */
+export const getUnpaidBookings = (customerId) => {
+  const id = resolveCustomerId(customerId);
+  if (!id) return [];
+  return mockBookings.filter(
+    (b) => b.customerId === id && b.status === 'completed' && b.paymentStatus === 'due',
+  );
+};
+
+/**
+ * Is this worker mid-job on something THEY accepted through the app?
+ *
+ * This is the single definition of the one-job-at-a-time rule — used by both acceptBooking (the
+ * enforcement) and the job feed (the button state), so the UI and the data layer cannot disagree.
+ *
+ * WHY `acceptedAt` RATHER THAN JUST AN ACTIVE STATUS: the seed ships in-flight fixtures. BK001 is
+ * 'en-route' for w1, which is the demo worker — so a plain "has an active job" test was true on a
+ * completely fresh install, locking every Accept before the user touched anything. The customer's
+ * booking then never gained a worker, so getActiveBooking() never matched it and the tracking option
+ * never appeared. That was a real regression, not a theoretical one.
+ *
+ * `acceptedAt` is written only by acceptBooking, so it cleanly separates "a job this worker took"
+ * from "a demo fixture that ships already in progress". Real workers are unaffected: every job they
+ * accept sets acceptedAt, including one accepted on another device (the field syncs), so the rule
+ * holds exactly as intended for them.
+ *
+ * Seeded fixtures still appear in getWorkerActiveJobs below, so the worker's "My jobs" list and the
+ * depart -> arrive -> done demo are unchanged.
+ */
+export const hasActiveAcceptedJob = (workerId) =>
+  !!workerId &&
+  mockBookings.some(
+    (b) =>
+      b.workerId === workerId &&
+      !!b.acceptedAt &&
+      ['assigned', 'en-route', 'in-progress'].includes(b.status),
+  );
+
+/** The worker's jobs that are currently in flight — the "My jobs" list in the worker portal. */
+export const getWorkerActiveJobs = (workerId) =>
+  workerId
+    ? mockBookings.filter(
+        (b) => b.workerId === workerId && ['assigned', 'en-route', 'in-progress'].includes(b.status),
+      )
+    : [];
+
+/**
+ * The worker's finished AND paid jobs, newest first — these are the ones eligible for worker
+ * feedback about the customer.
+ *
+ * Payment is part of the condition deliberately: asking a worker to rate the customer while money is
+ * still outstanding invites a complaint about the non-payment rather than the experience, and the
+ * unpaid case is already surfaced elsewhere.
+ */
+export const getWorkerPaidJobs = (workerId) =>
+  workerId
+    ? mockBookings
+        .filter((b) => b.workerId === workerId && b.status === 'completed' && b.paymentStatus === 'paid')
+        .sort((a, b) => String(b.paidAt || b.completedAt || '').localeCompare(String(a.paidAt || a.completedAt || '')))
+    : [];
+
+/**
+ * Subscribes a component to booking mutations. Returns the version counter, which callers can
+ * ignore — the point is the re-render. Use this wherever one portal must react to the other's
+ * action (worker marks a job done -> customer's payment block appears).
+ */
+export function useBookings() {
+  return useSyncExternalStore(subscribeBookings, getBookingsVersion, getBookingsVersion);
+}

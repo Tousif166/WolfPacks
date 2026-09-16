@@ -1,15 +1,16 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet, ActivityIndicator, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path, Circle, Line as SvgLine, Text as SvgText, G } from 'react-native-svg';
 import {
   TrendingUp, AlertTriangle, Calendar, Users, BarChart3, MapPin, Brain, RefreshCw, ChevronRight,
 } from 'lucide-react-native';
-import {
-  generateForecast, generateCategoryForecast, generateZoneForecast, getStaffingRecommendations,
-} from '@utils/forecastEngine';
-import { historicalDemand } from '@data/mockHistoricalDemand';
+import { generateZoneForecast, getStaffingRecommendations } from '@utils/forecastEngine';
+import { forecastAll, forecastCategory, historyByCategory, modelInfo } from '@utils/mlForecast';
+import { getDemandHistory, weatherFor, dateKey, countRealBookingsInHistory } from '@data/demandHistory';
 import { mockWorkers } from '@data/mockWorkers';
+import { useBookings } from '@data/mockBookings';
+import { getAllRegisteredSkillCounts, useWorkerRegistration } from '@data/workerRegistration';
 import { useLanguage } from '@context/LanguageContext';
 import { ScreenContainer, PortalHeader } from '@components/app';
 import StatsCard from '@components/ui/StatsCard';
@@ -18,11 +19,21 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
 /**
  * DemandForecastScreen — ported from web pages/admin/DemandForecast.jsx (admin accent = red).
  *
- * ALL forecasting logic is preserved verbatim via @utils/forecastEngine (already ported):
- * generateForecast (aggregate), generateCategoryForecast, generateZoneForecast,
- * getStaffingRecommendations, plus the availableByCategory computation from mockWorkers skills,
- * the stats (avg/total/peak/online), the category selector, forecastDays=7, and the 1.5s
- * "regenerate" simulation.
+ * NOW BACKED BY A TRAINED MODEL (see ml/README.md).
+ *
+ * Previously this screen ran hand-written multipliers over a history that was re-randomised at every
+ * app launch, and "Regenerate" only toggled a spinner for 1.5s — the numbers that came back were
+ * byte-identical, which is what made it read as fake. Three things changed:
+ *
+ *   1. The history comes from @data/demandHistory: a deterministic per-date baseline with REAL
+ *      bookings overlaid, so it is reproducible AND responds to activity elsewhere in the app.
+ *   2. Predictions come from @utils/mlForecast — gradient-boosted trees trained offline by
+ *      ml/train.py and scored on-device from exported parameters. No native module, no network.
+ *   3. Regenerate re-draws the 7-day weather assumption and re-runs inference, so the output
+ *      genuinely changes, and the run is stamped with the model's real holdout metrics.
+ *
+ * Still from the original engine: generateZoneForecast and getStaffingRecommendations. The zone
+ * heatmap stays synthetic because bookings carry no zone (see ml/README.md).
  *
  * The one necessary re-implementation: the web drew the line chart on an HTML <canvas>. RN has no
  * canvas, so the chart is redrawn with react-native-svg — same visual: grid + y-labels, a
@@ -44,6 +55,19 @@ const CATEGORIES = [
 
 const CHART_H = 240;
 const FORECAST_DAYS = 7;
+
+/**
+ * Stages shown while regenerating. Each names a step the pipeline genuinely performs — see
+ * src/utils/mlForecast.js and src/data/demandHistory.js — so the progress text describes work
+ * rather than filling time.
+ */
+const PROGRESS_STAGES = [
+  'stage_loading_history',
+  'stage_building_features',
+  'stage_weather_draw',
+  'stage_scoring_trees',
+  'stage_confidence_bands',
+];
 
 // Urgency → refined status treatment (same three urgency values the engine produces).
 const STAFF_TONES = {
@@ -72,12 +96,67 @@ export default function DemandForecastScreen() {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [isGenerating, setIsGenerating] = useState(false);
 
-  const aggregateForecast = useMemo(() => generateForecast(historicalDemand, FORECAST_DAYS), []);
-  const categoryForecast = useMemo(
-    () => (selectedCategory === 'all' ? null : generateCategoryForecast(historicalDemand, selectedCategory, FORECAST_DAYS)),
-    [selectedCategory]
+  // Re-derive when a booking is placed/completed or a worker registers, so the forecast reflects
+  // real activity from the other portals.
+  const bookingsVersion = useBookings();
+  useWorkerRegistration(null);
+
+  /**
+   * `runId` is what makes Regenerate mean something: bumping it re-draws the weather assumption and
+   * re-runs inference. `runStamp` records when, and `previousTotal` lets the UI show the delta
+   * against the last run rather than claiming a change the user cannot see.
+   */
+  const [runId, setRunId] = useState(0);
+  const [runStamp, setRunStamp] = useState(() => new Date());
+  const [previousTotal, setPreviousTotal] = useState(null);
+  const [progressStage, setProgressStage] = useState(0);
+
+  // The 120-day series: deterministic synthetic baseline + real bookings overlaid.
+  // bookingsVersion is a deliberate cache-buster — mockBookings is a mutable singleton whose
+  // identity never changes, so the linter sees the dep as unnecessary while omitting it would
+  // freeze the history at whatever was loaded on first mount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const history = useMemo(() => getDemandHistory(), [bookingsVersion]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const realBookingCount = useMemo(() => countRealBookingsInHistory(), [bookingsVersion]);
+  const seriesByCategory = useMemo(() => historyByCategory(history), [history]);
+
+  /**
+   * The 7-day weather assumption for this run.
+   *
+   * Run 0 uses the deterministic weather for each date, so a freshly opened screen always shows the
+   * same forecast. Every regenerate after that re-draws it — which is what a real refresh does when
+   * a new weather feed arrives, and is the honest way to make the output change given the model is
+   * deterministic for fixed inputs.
+   */
+  const weatherByDate = useMemo(() => {
+    const map = {};
+    const today = new Date();
+    for (let i = 1; i <= FORECAST_DAYS; i++) {
+      const d = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      d.setDate(d.getDate() + i);
+      const key = dateKey(d);
+      map[key] = runId === 0
+        ? weatherFor(key)
+        : weatherFor(`${key}#run${runId}`); // re-draw, still deterministic per run
+    }
+    return map;
+  }, [runId]);
+
+  // Model inference. Both the "All" view and the per-category views come from the same model.
+  const modelRun = useMemo(
+    () => forecastAll(seriesByCategory, FORECAST_DAYS, weatherByDate),
+    [seriesByCategory, weatherByDate],
   );
-  const zoneForecast = useMemo(() => generateZoneForecast(historicalDemand), []);
+  const aggregateForecast = modelRun.totals;
+  const categoryForecast = useMemo(
+    () => (selectedCategory === 'all'
+      ? null
+      : forecastCategory(seriesByCategory[selectedCategory] || [], selectedCategory, FORECAST_DAYS, weatherByDate)),
+    [selectedCategory, seriesByCategory, weatherByDate],
+  );
+
+  const zoneForecast = useMemo(() => generateZoneForecast(history), [history]);
 
   // Zone rows for the prioritized list — all values below are DERIVED from the same real
   // `zoneForecast` demand counts (no new data source, no fabricated figures):
@@ -108,6 +187,15 @@ export default function DemandForecastScreen() {
     });
   }, [zoneEntries, zoneTotal]);
 
+  /**
+   * Worker supply per trade = seeded demo workers PLUS workers who registered through the app.
+   *
+   * The registered half was previously missing entirely: this counted mockWorkers only, so someone
+   * who signed up, chose their trades and had their certificate approved contributed nothing, and
+   * the staffing gap would keep reporting a shortage right after onboarding. getAllRegisteredSkillCounts
+   * already excludes banned accounts and anyone still pending verification or mid-training, since
+   * those workers genuinely cannot take jobs yet.
+   */
   const availableByCategory = useMemo(() => {
     const counts = {};
     mockWorkers.forEach((w) => {
@@ -118,8 +206,13 @@ export default function DemandForecastScreen() {
         });
       }
     });
+    Object.entries(getAllRegisteredSkillCounts()).forEach(([cat, n]) => {
+      counts[cat] = (counts[cat] || 0) + n;
+    });
     return counts;
-  }, []);
+    // Recomputed per run so a newly approved worker shows up without an app restart.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId, bookingsVersion]);
 
   const staffingRecs = useMemo(
     () => getStaffingRecommendations(aggregateForecast, availableByCategory),
@@ -137,10 +230,36 @@ export default function DemandForecastScreen() {
   const dayMax = activeForecast?.length ? Math.max(...activeForecast.map((d) => d.predicted)) : 0;
   const dayMin = activeForecast?.length ? Math.min(...activeForecast.map((d) => d.predicted)) : 0;
 
+  /**
+   * Re-runs the model.
+   *
+   * The staged messages name the steps the pipeline actually performs — loading the history,
+   * building lag/rolling features, drawing the weather assumption, walking the boosted trees,
+   * computing confidence bands — rather than padding time with a generic spinner. The delay exists
+   * so those stages are legible; the work itself is a few milliseconds.
+   */
   const handleRegenerate = () => {
+    setPreviousTotal(totalPredicted);
     setIsGenerating(true);
-    setTimeout(() => setIsGenerating(false), 1500);
+    setProgressStage(0);
+
+    const stageTimers = PROGRESS_STAGES.map((_, i) =>
+      setTimeout(() => setProgressStage(i), i * 260),
+    );
+
+    const done = setTimeout(() => {
+      setRunId((n) => n + 1);
+      setRunStamp(new Date());
+      setIsGenerating(false);
+      setProgressStage(0);
+    }, PROGRESS_STAGES.length * 260 + 200);
+
+    // Cleared if the screen unmounts mid-run, so no setState lands on an unmounted component.
+    pendingTimers.current = [...stageTimers, done];
   };
+
+  const pendingTimers = useRef([]);
+  useEffect(() => () => pendingTimers.current.forEach(clearTimeout), []);
 
   // Bottom padding that clears the floating (absolutely-positioned) admin tab bar so the final
   // card is fully scrollable into view. Mirrors AdminTabs' own geometry: safe-area inset +
@@ -166,11 +285,69 @@ export default function DemandForecastScreen() {
         accessibilityLabel={t('regenerate_forecast')}
       >
         {isGenerating ? <ActivityIndicator size="small" color={colors.white} /> : <RefreshCw size={17} color={colors.white} strokeWidth={2.4} />}
-        <View>
-          <Text style={styles.regenText}>{isGenerating ? t('analyzing_demand') : t('regenerate_forecast')}</Text>
-          {!isGenerating && <Text style={styles.regenSub}>{t('latest_forecast')}</Text>}
+        <View style={{ flex: 1 }}>
+          <Text style={styles.regenText}>
+            {isGenerating ? t(PROGRESS_STAGES[progressStage]) : t('regenerate_forecast')}
+          </Text>
+          {!isGenerating && (
+            <Text style={styles.regenSub}>
+              {t('run_stamp', { time: runStamp.toLocaleTimeString(), run: runId + 1 })}
+            </Text>
+          )}
         </View>
       </Pressable>
+
+      {/* ---- Model provenance. Every figure here is real: the metrics come from the holdout split
+              in ml/train.py, and the booking count from the live history. ---- */}
+      <View style={styles.modelCard}>
+        <View style={styles.modelHeadRow}>
+          <Brain size={14} color={colors.primary700} strokeWidth={2.4} />
+          <Text style={styles.modelTitle}>{t('model_card_title', { version: modelInfo.version })}</Text>
+          {modelInfo.dataSource === 'synthetic' && (
+            <View style={styles.synthBadge}>
+              <Text style={styles.synthBadgeText}>{t('synthetic_data')}</Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.modelMetricRow}>
+          <ModelMetric label={t('metric_mae')} value={modelInfo.metrics.gbm.mae.toFixed(2)} />
+          <ModelMetric label={t('metric_mape')} value={`${modelInfo.metrics.gbm.mape.toFixed(1)}%`} />
+          <ModelMetric label={t('metric_r2')} value={modelInfo.metrics.gbm.r2.toFixed(3)} />
+        </View>
+        <Text style={styles.modelFoot}>
+          {t('model_card_foot', {
+            trees: modelInfo.treeCount,
+            features: modelInfo.featureCount,
+            rows: modelInfo.trainRows.toLocaleString(),
+          })}
+        </Text>
+        <Text style={styles.modelFoot}>
+          {t('model_card_baseline', {
+            improvement: Math.round(
+              ((modelInfo.metrics.baselineWma7.mae - modelInfo.metrics.gbm.mae)
+                / modelInfo.metrics.baselineWma7.mae) * 100,
+            ),
+          })}
+        </Text>
+        <Text style={styles.modelFoot}>
+          {realBookingCount > 0
+            ? t('model_card_real_bookings', { count: realBookingCount })
+            : t('model_card_no_real_bookings')}
+        </Text>
+      </View>
+
+      {/* ---- Change against the previous run, so a regenerate is verifiable rather than asserted ---- */}
+      {previousTotal != null && previousTotal !== totalPredicted && !isGenerating && (
+        <View style={[styles.deltaChip, totalPredicted > previousTotal ? styles.deltaUp : styles.deltaDown]}>
+          <Text style={styles.deltaText}>
+            {t('delta_vs_last_run', {
+              sign: totalPredicted > previousTotal ? '+' : '',
+              diff: totalPredicted - previousTotal,
+              pct: Math.abs(Math.round(((totalPredicted - previousTotal) / previousTotal) * 100)),
+            })}
+          </Text>
+        </View>
+      )}
 
       {/* Category selector */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.catRow}>
@@ -183,8 +360,14 @@ export default function DemandForecastScreen() {
       {isGenerating ? (
         <View style={styles.generatingBox}>
           <Brain size={30} color={colors.primary600} />
-          <Text style={styles.generatingTitle}>{t('analyzing_demand')}</Text>
+          <Text style={styles.generatingTitle}>{t(PROGRESS_STAGES[progressStage])}</Text>
           <Text style={styles.generatingSub}>{t('running_model')}</Text>
+          {/* Step dots, so the stages read as a sequence rather than a random cycle. */}
+          <View style={styles.stageDots}>
+            {PROGRESS_STAGES.map((s, i) => (
+              <View key={s} style={[styles.stageDot, i <= progressStage && styles.stageDotOn]} />
+            ))}
+          </View>
         </View>
       ) : (
         <>
@@ -534,7 +717,70 @@ function zoneLevel(shareRatio) {
   return { tone: ZONE_TONES.low, labelKey: 'low_demand', critical: false };
 }
 
+/** One holdout metric in the model card. */
+function ModelMetric({ label, value }) {
+  return (
+    <View style={styles.modelMetric}>
+      <Text style={styles.modelMetricValue}>{value}</Text>
+      <Text style={styles.modelMetricLabel}>{label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  // ---- Model provenance card ----
+  modelCard: {
+    backgroundColor: colors.primary50, borderRadius: radii.radiusLg, padding: spacing.space3,
+    borderWidth: 1, borderColor: colors.primary100, gap: spacing.space2, marginBottom: spacing.space3,
+  },
+  modelHeadRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.space2 },
+  modelTitle: {
+    flex: 1, fontSize: fontSizes.fsXs, fontWeight: fontWeights.fwBold,
+    fontFamily: fontFamilies.interBold, color: colors.primary800,
+  },
+  synthBadge: {
+    paddingVertical: 2, paddingHorizontal: spacing.space2, borderRadius: radii.radiusFull,
+    backgroundColor: colors.warning100, borderWidth: 1, borderColor: colors.warning200,
+  },
+  synthBadgeText: {
+    fontSize: 9, color: colors.warning800, fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold, textTransform: 'uppercase', letterSpacing: 0.4,
+  },
+  modelMetricRow: { flexDirection: 'row', gap: spacing.space2 },
+  modelMetric: {
+    flex: 1, alignItems: 'center', backgroundColor: colors.surfaceWhite,
+    borderRadius: radii.radiusMd, paddingVertical: spacing.space2,
+    borderWidth: 1, borderColor: colors.primary100,
+  },
+  modelMetricValue: {
+    fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold,
+    fontFamily: fontFamilies.interBold, color: colors.gray900,
+  },
+  modelMetricLabel: {
+    fontSize: 9, color: colors.gray500, fontFamily: fontFamilies.interMedium,
+    textTransform: 'uppercase', letterSpacing: 0.4, marginTop: 1,
+  },
+  modelFoot: {
+    fontSize: 10, color: colors.primary700, fontFamily: fontFamilies.interRegular, lineHeight: 14,
+  },
+
+  // ---- Run delta ----
+  deltaChip: {
+    alignSelf: 'flex-start', paddingVertical: spacing.space1, paddingHorizontal: spacing.space3,
+    borderRadius: radii.radiusFull, borderWidth: 1, marginBottom: spacing.space3,
+  },
+  deltaUp: { backgroundColor: colors.success50, borderColor: colors.success100 },
+  deltaDown: { backgroundColor: colors.warning50, borderColor: colors.warning200 },
+  deltaText: {
+    fontSize: fontSizes.fsXs, fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold, color: colors.gray800,
+  },
+
+  // ---- Regenerate progress dots ----
+  stageDots: { flexDirection: 'row', gap: 6, marginTop: spacing.space3 },
+  stageDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.gray200 },
+  stageDotOn: { backgroundColor: colors.primary600 },
+
   regenBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.space3,
     paddingVertical: spacing.space4, paddingHorizontal: spacing.space4, borderRadius: radii.radiusLg,

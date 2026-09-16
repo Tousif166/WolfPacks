@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react';
 import { View, Text, TextInput, Pressable, Animated, StyleSheet } from 'react-native';
+import DatePickerField, { todayIso } from '@components/ui/DatePickerField';
 import {
   Calendar,
   Plus,
@@ -83,6 +84,14 @@ export default function LeaveRequestsScreen() {
     setLeaves((prev) => [...prev, { id: `lr-${Date.now()}`, ...form, status: 'pending' }]);
     setShowModal(false);
     setForm({ startDate: '', endDate: '', reason: '' });
+  };
+
+  /**
+   * Moving the start date past the already-chosen end date would leave an impossible range, so the
+   * end date is cleared rather than silently kept invalid. ISO strings compare correctly with `>`.
+   */
+  const handleStartChange = (v) => {
+    setForm((p) => ({ ...p, startDate: v, endDate: p.endDate && p.endDate < v ? '' : p.endDate }));
   };
 
   const canSubmit = form.startDate && form.endDate && form.reason;
@@ -231,8 +240,32 @@ export default function LeaveRequestsScreen() {
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={t('request_leave')}>
         <View style={{ gap: spacing.space4 }}>
-          <Field label={t('start_date')} value={form.startDate} onChangeText={(v) => setForm((p) => ({ ...p, startDate: v }))} placeholder="YYYY-MM-DD" />
-          <Field label={t('end_date')} value={form.endDate} onChangeText={(v) => setForm((p) => ({ ...p, endDate: v }))} placeholder="YYYY-MM-DD" />
+          {/* Calendar pickers instead of free text. The old YYYY-MM-DD inputs accepted any string —
+              canSubmit only checked for non-empty — so "banana" or an end date before the start
+              would submit happily. The constraints below are enforced visually: out-of-range days
+              are rendered dead rather than rejected after the fact. */}
+          <View style={{ gap: spacing.space1 }}>
+            <Text style={styles.fieldLabel}>{t('start_date')}</Text>
+            <DatePickerField
+              value={form.startDate}
+              onChange={handleStartChange}
+              minDate={todayIso()}
+              placeholder={t('pick_a_date')}
+              title={t('start_date')}
+            />
+          </View>
+
+          <View style={{ gap: spacing.space1 }}>
+            <Text style={styles.fieldLabel}>{t('end_date')}</Text>
+            <DatePickerField
+              value={form.endDate}
+              // Leave cannot end before it starts, so the start date is the floor once chosen.
+              minDate={form.startDate || todayIso()}
+              onChange={(v) => setForm((p) => ({ ...p, endDate: v }))}
+              placeholder={form.startDate ? t('pick_a_date') : t('pick_start_first')}
+              title={t('end_date')}
+            />
+          </View>
           <Field label={t('reason')} value={form.reason} onChangeText={(v) => setForm((p) => ({ ...p, reason: v }))} placeholder={t('reason_placeholder')} />
           <Pressable style={[styles.submitBtn, !canSubmit && styles.submitDisabled]} onPress={handleSubmit} disabled={!canSubmit}>
             <Text style={styles.submitText}>{t('submit_request')}</Text>

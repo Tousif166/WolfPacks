@@ -2,6 +2,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import CustomerTabs from './CustomerTabs';
 import BookingHistoryScreen from '@screens/customer/BookingHistoryScreen';
 import LiveTrackingMapScreen from '@screens/customer/LiveTrackingMapScreen';
+import PaymentPortalScreen from '@screens/customer/PaymentPortalScreen';
 
 /**
  * CustomerStack — wraps CustomerTabs and adds the screens that the web app pushed ABOVE the
@@ -23,6 +24,13 @@ export default function CustomerStack() {
       <Stack.Screen
         name="LiveTrackingMap"
         component={LiveTrackingMapScreen}
+        options={{ headerShown: false }}
+      />
+      {/* Pay -> receipt -> feedback for a completed job. Own in-content top bar, so no stack
+          header; receives { bookingId }. */}
+      <Stack.Screen
+        name="PaymentPortal"
+        component={PaymentPortalScreen}
         options={{ headerShown: false }}
       />
       <Stack.Screen

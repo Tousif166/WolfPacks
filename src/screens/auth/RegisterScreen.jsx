@@ -2,12 +2,14 @@ import { useState } from 'react';
 import { View, Text, TextInput, Pressable, ScrollView, ActivityIndicator, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { launchImageLibrary } from 'react-native-image-picker';
-import { Eye, EyeOff, User, Wrench, Upload, CheckCircle } from 'lucide-react-native';
+import { Eye, EyeOff, User, Wrench, Upload, CheckCircle, Fingerprint, ChevronRight } from 'lucide-react-native';
 import { useAuth } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
 import { BrandLogo } from '@components/app';
 import LanguageToggle from '@components/ui/LanguageToggle';
 import MultiSelectField from '@components/ui/MultiSelectField';
+import EkycModal from '@components/ui/EkycModal';
+import { STATE_NAMES, getCitiesForState } from '@data/indiaStatesAndCities';
 import { SKILL_OPTIONS, skillName, saveWorkerRegistration } from '@data/workerRegistration';
 import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies } from '@theme';
 
@@ -37,8 +39,44 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
  * is baked in — all field rows stack vertically, matching the phone branch.
  */
 
+/**
+ * Plain-language sign-up failures.
+ *
+ * Same reasoning as friendlyAuthError in LoginScreen: Supabase's messages are written for
+ * developers. The signup-specific case worth naming is an email that is already registered, because
+ * the fix ("sign in instead") is different from every other failure.
+ */
+function friendlySignupError(rawError, t) {
+  const msg = String(rawError || '').toLowerCase();
+
+  if (
+    msg.includes('already registered') ||
+    msg.includes('already exists') ||
+    msg.includes('user already')
+  ) {
+    return t('signup_email_taken');
+  }
+  if (msg.includes('password')) {
+    return t('password_min');
+  }
+  if (msg.includes('invalid') && msg.includes('email')) {
+    return t('signup_email_invalid');
+  }
+  if (
+    msg.includes('network') ||
+    msg.includes('fetch') ||
+    msg.includes('timeout') ||
+    msg.includes('not configured')
+  ) {
+    return t('login_no_connection');
+  }
+  return t('signup_failed_generic');
+}
+
 export default function RegisterScreen({ navigation, route }) {
-  const { register, loading } = useAuth();
+  // `submitting`, not `loading`: `loading` swaps the navigator to the splash screen, which would
+  // unmount this form mid-submit and discard everything the user typed.
+  const { register, submitting } = useAuth();
   const { t } = useLanguage();
   const insets = useSafeAreaInsets();
   const defaultRole = route?.params?.role || 'customer';
@@ -56,6 +94,14 @@ export default function RegisterScreen({ navigation, route }) {
   const [certName, setCertName] = useState(null);
   const [hasCert, setHasCert] = useState(false);
   const [wantsTraining, setWantsTraining] = useState(false);
+  // e-KYC: the third verification route. Holds the completed payload, or null if unused.
+  const [ekyc, setEkyc] = useState(null);
+  const [ekycOpen, setEkycOpen] = useState(false);
+
+  // State/city cascading dropdowns
+  const [stateOpen, setStateOpen] = useState(false);
+  const [cityOpen, setCityOpen] = useState(false);
+  const cityOptions = form.state ? getCitiesForState(form.state) : [];
 
   const set = (field) => (value) => setForm((prev) => ({ ...prev, [field]: value }));
 
@@ -74,8 +120,11 @@ export default function RegisterScreen({ navigation, route }) {
       setError(t('select_skill_required'));
       return;
     }
-    if (role === 'worker' && !hasCert && !wantsTraining) {
-      setError(t('cert_or_training'));
+    // Three routes to being an employable worker, any ONE of which satisfies sign-up:
+    // e-KYC (instant, government-backed), an uploaded certificate (goes to admin review), or the
+    // free training programme (employable on completion).
+    if (role === 'worker' && !ekyc && !hasCert && !wantsTraining) {
+      setError(t('ekyc_cert_or_training'));
       return;
     }
 
@@ -94,7 +143,7 @@ export default function RegisterScreen({ navigation, route }) {
     });
 
     if (!result.success) {
-      setError(result.error);
+      setError(friendlySignupError(result.error, t));
       return;
     }
 
@@ -102,7 +151,7 @@ export default function RegisterScreen({ navigation, route }) {
     // the skill IDs used for job-category filtering. Keyed by email because there may be no user
     // id yet when email confirmation is pending. See src/data/workerRegistration.js.
     if (role === 'worker') {
-      saveWorkerRegistration(form.email, { skills, hasCertificate: hasCert, certName, wantsTraining });
+      saveWorkerRegistration(form.email, { skills, hasCertificate: hasCert, certName, wantsTraining, ekyc });
     }
     if (result.needsEmailConfirm) {
       setSuccess(true);
@@ -186,8 +235,45 @@ export default function RegisterScreen({ navigation, route }) {
           <Field label={t('full_name')} value={form.fullName} onChangeText={set('fullName')} placeholder={t('your_name')} />
           <Field label={t('phone_number')} value={form.phone} onChangeText={set('phone')} placeholder="+91 98765 43210" keyboardType="phone-pad" />
           <Field label={t('email_address')} value={form.email} onChangeText={set('email')} placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none" />
-          <Field label={t('city')} value={form.city} onChangeText={set('city')} placeholder={t('your_city')} />
-          <Field label={t('state')} value={form.state} onChangeText={set('state')} placeholder={t('state')} />
+
+          {/* State dropdown — must be picked FIRST */}
+          <View style={styles.field}>
+            <Text style={styles.fieldLabel}>{t('state')}</Text>
+            <MultiSelectField
+              value={form.state ? [form.state] : []}
+              onChange={(selected) => {
+                const newState = selected[0] || '';
+                setForm((prev) => ({ ...prev, state: newState, city: '' })); // Clear city when state changes
+              }}
+              options={STATE_NAMES}
+              renderOption={(s) => s}
+              open={stateOpen}
+              setOpen={setStateOpen}
+              placeholder={t('select_state')}
+              emptyLabel={t('select_state')}
+              singleSelect
+            />
+          </View>
+
+          {/* City dropdown — only enabled after state is chosen */}
+          <View style={styles.field}>
+            <Text style={styles.fieldLabel}>{t('city')}</Text>
+            <MultiSelectField
+              value={form.city ? [form.city] : []}
+              onChange={(selected) => set('city')(selected[0] || '')}
+              options={cityOptions}
+              renderOption={(c) => c}
+              open={cityOpen}
+              setOpen={setCityOpen}
+              placeholder={form.state ? t('select_city') : t('select_state_first')}
+              emptyLabel={form.state ? t('no_cities') : t('select_state_first')}
+              disabled={!form.state}
+              singleSelect
+            />
+            {!form.state && (
+              <Text style={styles.fieldHint}>{t('select_state_before_city')}</Text>
+            )}
+          </View>
 
           <View style={styles.field}>
             <Text style={styles.fieldLabel}>{t('password')}</Text>
@@ -239,8 +325,54 @@ export default function RegisterScreen({ navigation, route }) {
 
               <View>
                 <Text style={styles.certLabel}>
-                  {t('experience_cert')} <Text style={styles.required}>{t('required')}</Text>
+                  {t('verify_yourself')} <Text style={styles.required}>{t('required')}</Text>
                 </Text>
+                <Text style={styles.verifyIntro}>{t('verify_pick_one')}</Text>
+
+                {/* ---- Route 1: e-KYC. Listed first because it is instant and needs no review. ---- */}
+                {ekyc ? (
+                  <View style={styles.ekycDone}>
+                    <CheckCircle size={18} color={colors.success700} strokeWidth={2.4} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.ekycDoneTitle}>{t('ekyc_done_title')}</Text>
+                      <Text style={styles.ekycDoneSub}>
+                        {t('ekyc_done_sub', { last4: ekyc.aadhaarLast4 })}
+                      </Text>
+                    </View>
+                    <Pressable onPress={() => setEkyc(null)} hitSlop={8} accessibilityLabel={t('remove')}>
+                      <Text style={styles.ekycRemove}>{t('remove')}</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <Pressable
+                    style={styles.ekycBtn}
+                    onPress={() => setEkycOpen(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('ekyc_cta')}
+                  >
+                    <View style={styles.ekycBtnIcon}>
+                      <Fingerprint size={18} color={colors.primary700} strokeWidth={2.3} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <View style={styles.ekycTitleRow}>
+                        <Text style={styles.ekycBtnTitle}>{t('ekyc_cta')}</Text>
+                        <View style={styles.instantPill}>
+                          <Text style={styles.instantPillText}>{t('ekyc_instant')}</Text>
+                        </View>
+                      </View>
+                      <Text style={styles.ekycBtnSub}>{t('ekyc_cta_sub')}</Text>
+                    </View>
+                    <ChevronRight size={18} color={colors.primary600} strokeWidth={2.4} />
+                  </Pressable>
+                )}
+
+                <View style={styles.certOr}>
+                  <View style={styles.certOrLine} />
+                  <Text style={styles.certOrText}>{t('or')}</Text>
+                  <View style={styles.certOrLine} />
+                </View>
+
+                {/* ---- Route 2: uploaded certificate (admin review) ---- */}
                 <Pressable style={[styles.uploadBtn, certName && styles.uploadBtnDone]} onPress={handlePickCert}>
                   {certName ? (
                     <>
@@ -254,6 +386,10 @@ export default function RegisterScreen({ navigation, route }) {
                     </>
                   )}
                 </Pressable>
+                {/* An uploaded certificate goes to the cooperative admin for review — it does not
+                    make the worker job-ready on its own. Setting that expectation here avoids the
+                    worker signing up and wondering why they cannot accept anything yet. */}
+                {certName ? <Text style={styles.certReviewNote}>{t('cert_goes_for_review')}</Text> : null}
 
                 <View style={styles.certOr}>
                   <View style={styles.certOrLine} />
@@ -276,8 +412,18 @@ export default function RegisterScreen({ navigation, route }) {
             </View>
           )}
 
-          <Pressable style={[styles.submit, loading && styles.submitDisabled]} onPress={handleSubmit} disabled={loading}>
-            {loading ? (
+          {/* Simulated Aadhaar e-KYC. Passing the typed name and chosen trade so the "pulled from
+              the government record" panel reflects what this worker actually entered. */}
+          <EkycModal
+            isOpen={ekycOpen}
+            onClose={() => setEkycOpen(false)}
+            onVerified={setEkyc}
+            fullName={form.fullName}
+            occupation={skills.length ? skills.map(skillName).join(', ') : null}
+          />
+
+          <Pressable style={[styles.submit, submitting && styles.submitDisabled]} onPress={handleSubmit} disabled={submitting}>
+            {submitting ? (
               <ActivityIndicator size="small" color={colors.white} />
             ) : (
               <Text style={styles.submitText}>{t('register_as', { role: role === 'customer' ? t('customer') : t('worker') })}</Text>
@@ -450,6 +596,13 @@ const styles = StyleSheet.create({
     fontFamily: fontFamilies.interRegular,
     marginTop: 2,
   },
+  certReviewNote: {
+    fontSize: fontSizes.fsXs,
+    color: colors.warning800,
+    fontFamily: fontFamilies.interMedium,
+    marginTop: spacing.space2,
+    lineHeight: 16,
+  },
   input: {
     paddingVertical: spacing.space3,
     paddingHorizontal: spacing.space4,
@@ -500,6 +653,93 @@ const styles = StyleSheet.create({
     color: colors.danger500,
     fontFamily: fontFamilies.interRegular,
   },
+
+  // ---- e-KYC verification route ----
+  verifyIntro: {
+    fontSize: fontSizes.fsXs,
+    fontFamily: fontFamilies.interRegular,
+    color: colors.gray500,
+    marginBottom: spacing.space3,
+    marginTop: -spacing.space1,
+  },
+  ekycBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.space3,
+    padding: spacing.space3,
+    borderRadius: radii.radiusLg,
+    borderWidth: 1.5,
+    borderColor: colors.primary200,
+    backgroundColor: '#faf9ff',
+  },
+  ekycBtnIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: radii.radiusFull,
+    backgroundColor: colors.primary100,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ekycTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.space2,
+  },
+  ekycBtnTitle: {
+    fontSize: fontSizes.fsSm,
+    fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold,
+    color: colors.gray900,
+  },
+  instantPill: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: radii.radiusFull,
+    backgroundColor: colors.success50,
+  },
+  instantPillText: {
+    fontSize: 9.5,
+    fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold,
+    color: colors.success700,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  ekycBtnSub: {
+    fontSize: fontSizes.fsXs,
+    fontFamily: fontFamilies.interRegular,
+    color: colors.gray600,
+    marginTop: 1,
+  },
+  ekycDone: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.space3,
+    padding: spacing.space3,
+    borderRadius: radii.radiusLg,
+    borderWidth: 1.5,
+    borderColor: colors.success100,
+    backgroundColor: colors.success50,
+  },
+  ekycDoneTitle: {
+    fontSize: fontSizes.fsSm,
+    fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold,
+    color: colors.success800,
+  },
+  ekycDoneSub: {
+    fontSize: fontSizes.fsXs,
+    fontFamily: fontFamilies.interRegular,
+    color: colors.success700,
+    marginTop: 1,
+  },
+  ekycRemove: {
+    fontSize: fontSizes.fsXs,
+    fontFamily: fontFamilies.interSemiBold,
+    fontWeight: fontWeights.fwSemibold,
+    color: colors.danger600,
+  },
+
   uploadBtn: {
     flexDirection: 'row',
     alignItems: 'center',

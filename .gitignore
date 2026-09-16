@@ -70,6 +70,32 @@ yarn-error.log
 # Environment variables (react-native-config) — never commit real secrets
 .env
 .env.*.local
+# Server-only credentials for local tooling (migrations, admin scripts).
+# Deliberately NOT named `.env`, because android/app/build.gradle applies react-native-config's
+# dotenv.gradle, which compiles every key in `.env` into the APK where it is extractable.
+.env.tooling.local
+
+# Downloaded CLI binaries (supabase CLI is ~54 MB — fetched, not committed)
+tools/
+
+# Gradle build transcripts from local release builds
+build-release*.log
+
+# Schema/data dumps pulled from the hosted project for inspection — may contain live data
+remote-*-dump.sql
+live-check.sql
+remote-after-push.sql
+
+# Pre-revert snapshots (safety net for the MMKV rollback; not part of the project)
+.revert-backup/
+
+# Python bytecode from the ml/ training scripts
+__pycache__/
+*.pyc
+
+# Supabase CLI local state — link target, pooler host, org id, tool versions.
+# Machine-specific, not project source, and it leaks your database host.
+supabase/.temp/
 
 # Yarn
 .yarn/*
@@ -81,3 +107,13 @@ yarn-error.log
 
 # Contains release signing passwords (SAHAKAR_RELEASE_*) — keep out of version control.
 android/gradle.properties
+
+# ML pipeline
+# The generated dataset is reproducible from ml/generate_dataset.py, so it is not committed.
+# src/data/forecastModel.json IS committed — the app imports it at runtime.
+ml/data/
+ml/__pycache__/
+ml/.venv/
+ml/.parity_harness.js
+ml/.inference_harness.js
+ml/.inference_vectors.json

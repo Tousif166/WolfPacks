@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { View, Text, Pressable, Animated, StyleSheet } from 'react-native';
+import { View, Text, Pressable, Animated, Alert, StyleSheet } from 'react-native';
 import {
   RefreshCw,
   AlertTriangle,
@@ -13,11 +13,31 @@ import {
   Wrench,
   MoreVertical,
   Users as UsersIcon,
+  FileCheck,
+  FileText,
+  Check,
+  X as XIcon,
+  ShieldX,
+  GraduationCap,
 } from 'lucide-react-native';
 import { mockWorkers } from '@data/mockWorkers';
 import { getWorkerAvailability, isOnLeave } from '@data/workerStatus';
+import { applyStats } from '@data/workerStats';
+import {
+  getPendingCertificates,
+  approveCertificate,
+  rejectCertificateAsFake,
+  rejectCertificateAsUnqualified,
+  skillNames,
+  useWorkerRegistration,
+  getWorkerRegistration,
+  isTrainingBlocked,
+  isEkycVerified,
+  isCertificateApproved,
+} from '@data/workerRegistration';
 import { getWorkerList } from '@services/supabase';
 import { useLanguage } from '@context/LanguageContext';
+import { useAuth } from '@context/AuthContext';
 import { ScreenContainer } from '@components/app';
 import { SearchBar } from '@components/app';
 import Badge from '@components/ui/Badge';
@@ -62,12 +82,55 @@ function normaliseMock(w) {
   return {
     id: w.id, name: w.name || '—', phone: w.phone || '—', cooperative: w.cooperative || '—', joinDate: w.joinDate || '—',
     skills: Array.isArray(w.skills) ? w.skills : [], certificates: Array.isArray(w.certificates) ? w.certificates : [],
-    totalJobs: w.totalJobs ?? 0, earnings: w.earnings ?? 0, rating: w.rating ?? null, fairnessPosition: w.fairnessPosition ?? null,
+    // Layered with the same completed-job deltas the worker's own portal shows, so a job paid for
+    // in the customer portal is reflected here too (see src/data/workerStats.js).
+    ...(({ totalJobs, earnings, rating, weekly_hours_worked, cibil_score }) => ({
+      totalJobs, earnings, rating, weeklyHours: weekly_hours_worked, qualityScore: cibil_score,
+    }))(applyStats(
+      {
+        totalJobs: w.totalJobs ?? 0,
+        earnings: w.earnings ?? 0,
+        rating: w.rating ?? null,
+        weekly_hours_worked: w.weekly_hours_worked ?? 0,
+        cibil_score: w.cibil_score ?? null,
+      },
+      w.id,
+    )),
+    fairnessPosition: w.fairnessPosition ?? null,
     // Availability reflects what the worker actually toggled in their own portal (persisted), not
     // just the seeded flag. onLeave is derived from their approved leave requests covering today.
     available: getWorkerAvailability(w.id, w.available ?? false),
     onLeave: isOnLeave(w.leaveRequests),
-    verified: w.verified ?? false, banned: w.banned ?? false, source: 'demo',
+    // VERIFIED / IN-TRAINING are DERIVED, not taken from the seed flag.
+    //
+    // This used to be a bare `verified: w.verified ?? false`, i.e. whatever mockWorkers hardcodes
+    // (w1/w2/w3 ship `true`), with no reference to the worker's registration record. If this row
+    // ever grew a Verified column it would have asserted "verified" for a worker who is mid-training
+    // — the same class of bug the worker profile had. Derived from isTrainingBlocked, the single
+    // predicate the worker portal uses, so the two surfaces cannot disagree.
+    //
+    // Joined by EMAIL because that is how the registration store is keyed. A demo worker with no
+    // record is not blocked, so the seed flag survives untouched.
+    ...deriveVerification(w.email, w.verified ?? false),
+    banned: w.banned ?? false, source: 'demo',
+  };
+}
+
+/**
+ * Verification state for one worker row, from the registration record.
+ *
+ * Mirrors src/screens/worker/workerData.js exactly: an unfinished programme blocks the badge, and a
+ * positive credential is still required to earn it. Kept in one place here so the two row builders
+ * below cannot drift apart.
+ */
+function deriveVerification(email, seedVerified) {
+  const reg = email ? getWorkerRegistration(email) : null;
+  const blocked = isTrainingBlocked(reg);
+  return {
+    verified:
+      !blocked &&
+      (seedVerified || isEkycVerified(reg) || isCertificateApproved(reg) || !!reg?.training?.certificateIssued),
+    inTraining: !!reg?.training && blocked,
   };
 }
 
@@ -80,7 +143,12 @@ function normaliseRealWorker(p) {
     id: p.id, name: p.full_name || '(Name not set)', phone: p.phone || '—',
     cooperative: null, city: null, state: null, joinDate,
     skills: [], certificates: [], totalJobs: 0, earnings: 0, rating: null, fairnessPosition: null,
-    available: null, verified: false, banned: false, source: 'registered',
+    available: null, banned: false, source: 'registered',
+    // Was hardcoded `verified: false`, which was wrong in the other direction — a registered worker
+    // who had genuinely completed training or e-KYC still read as unverified. Supabase does not
+    // return an email on this row, so `p.email` is usually absent and this falls back to the
+    // hardcoded-false behaviour; when an email IS present the real record is consulted.
+    ...deriveVerification(p.email, false),
   };
 }
 
@@ -98,6 +166,7 @@ function mergeWorkers(demoList, realList) {
 
 export default function WorkerManagementScreen() {
   const { t } = useLanguage();
+  const { isDemo } = useAuth();
   const [workers, setWorkers] = useState(() => mockWorkers.map(normaliseMock));
   const [fetchError, setFetchError] = useState(null);
   const [fetchLoading, setFetchLoading] = useState(true);
@@ -107,7 +176,55 @@ export default function WorkerManagementScreen() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [sortDesc, setSortDesc] = useState(true);
 
+  // ---- Certificate verification queue ----
+  // Subscribes to the registration store so a decision removes the card immediately.
+  useWorkerRegistration(null);
+  const pendingCerts = getPendingCertificates();
+  const [declining, setDeclining] = useState(null); // the record awaiting a decline reason
+
+  const handleApprove = (rec) => {
+    Alert.alert(
+      t('accept_cert'),
+      t('accept_cert_confirm', { email: rec.email, skills: skillNames(rec.skills).join(', ') || '—' }),
+      [
+        { text: t('cancel'), style: 'cancel' },
+        { text: t('accept_cert'), onPress: () => approveCertificate(rec.email) },
+      ],
+    );
+  };
+
+  /**
+   * Declining as fraudulent BANS the account, which locks the worker out entirely. That is not
+   * recoverable from their side, so it takes a destructive-styled second confirmation.
+   */
+  const handleDeclineFake = (rec) => {
+    setDeclining(null);
+    Alert.alert(
+      t('ban_worker_title'),
+      t('ban_worker_confirm', { email: rec.email }),
+      [
+        { text: t('cancel'), style: 'cancel' },
+        { text: t('ban_worker_action'), style: 'destructive', onPress: () => rejectCertificateAsFake(rec.email) },
+      ],
+    );
+  };
+
+  /** Declining as insufficient moves the worker into the free training programme instead. */
+  const handleDeclineUnqualified = (rec) => {
+    setDeclining(null);
+    rejectCertificateAsUnqualified(rec.email);
+    Alert.alert(t('moved_to_training_title'), t('moved_to_training_msg', { email: rec.email }));
+  };
+
   const loadRealWorkers = async () => {
+    // A DEMO admin has no Supabase JWT, so this query is rejected by RLS. Skip it rather than
+    // surfacing a red fetch-error banner the demo user can do nothing about — the seeded workers and
+    // the whole local-data side of this screen (certificate verification, bans, stats) still work.
+    // See the tradeoff note in AuthContext.DEMO_ACCOUNTS.
+    if (isDemo) {
+      setFetchLoading(false);
+      return;
+    }
     setFetchLoading(true);
     setFetchError(null);
     const { data, error } = await getWorkerList();
@@ -122,7 +239,8 @@ export default function WorkerManagementScreen() {
 
   useEffect(() => {
     loadRealWorkers();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDemo]);
 
   // SAME search predicate as before.
   const searched = workers.filter((w) => {
@@ -173,14 +291,19 @@ export default function WorkerManagementScreen() {
   // Status precedence: Banned > On leave > Registered (no availability data) > Online / Offline.
   // On leave outranks Online because such a worker is out of the job pool even if their toggle
   // was left on.
+  // "In training" is inserted just below Banned and above On leave: such a worker cannot take work
+  // at all, so reporting them as Online/Offline would misrepresent the pool. Previously an admin had
+  // no way to see training state on this list.
   const statusVariant = (w) =>
     w.banned ? 'cancelled'
+      : w.inTraining ? 'pending'
       : w.onLeave ? 'pending'
       : w.source === 'registered' ? 'assigned'
       : w.available ? 'completed'
       : 'default';
   const statusLabel = (w) =>
     w.banned ? t('status_banned')
+      : w.inTraining ? t('training_in_progress_title')
       : w.onLeave ? t('on_leave')
       : w.source === 'registered' ? t('status_registered')
       : w.available ? t('status_online')
@@ -226,6 +349,46 @@ export default function WorkerManagementScreen() {
             <Text style={styles.errorText}>{t('demo_workers_shown', { error: fetchError })}</Text>
             <Pressable onPress={loadRealWorkers}><Text style={styles.retryText}>{t('retry')}</Text></Pressable>
           </View>
+        </View>
+      )}
+
+      {/* ---------------- Certificate verification queue ----------------
+          Experience certificates uploaded at sign-up land here. Until one is decided the worker can
+          log in but cannot take jobs, so this is the first thing an admin should see. */}
+      {pendingCerts.length > 0 && (
+        <View style={styles.verifyWrap}>
+          <View style={styles.verifyHeadRow}>
+            <FileCheck size={16} color={colors.primary700} strokeWidth={2.3} />
+            <Text style={styles.verifyHeading}>
+              {t('certificates_to_verify', { count: pendingCerts.length })}
+            </Text>
+          </View>
+          {pendingCerts.map((rec) => (
+            <View key={rec.email} style={styles.verifyCard}>
+              <View style={styles.verifyTop}>
+                <View style={styles.verifyIcon}>
+                  <FileText size={16} color={colors.primary700} strokeWidth={2.3} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.verifyCertName} numberOfLines={1}>{rec.certificate.name}</Text>
+                  <Text style={styles.verifyEmail} numberOfLines={1}>{rec.email}</Text>
+                </View>
+              </View>
+              <Text style={styles.verifySkills} numberOfLines={2}>
+                {t('claimed_skills', { skills: skillNames(rec.skills).join(', ') || '—' })}
+              </Text>
+              <View style={styles.verifyBtnRow}>
+                <Pressable style={[styles.verifyBtn, styles.verifyAccept]} onPress={() => handleApprove(rec)}>
+                  <Check size={14} color={colors.white} strokeWidth={2.6} />
+                  <Text style={styles.verifyAcceptText}>{t('accept_cert')}</Text>
+                </Pressable>
+                <Pressable style={[styles.verifyBtn, styles.verifyDecline]} onPress={() => setDeclining(rec)}>
+                  <XIcon size={14} color={colors.danger700} strokeWidth={2.6} />
+                  <Text style={styles.verifyDeclineText}>{t('decline_cert')}</Text>
+                </Pressable>
+              </View>
+            </View>
+          ))}
         </View>
       )}
 
@@ -305,6 +468,36 @@ export default function WorkerManagementScreen() {
           </View>
         )}
       </Animated.View>
+
+      {/* Decline-reason picker. The two reasons have very different consequences, so the admin
+          chooses explicitly rather than a single "decline" doing something implicit. */}
+      <Modal isOpen={!!declining} onClose={() => setDeclining(null)} title={t('decline_cert')} size="sm">
+        {declining && (
+          <View style={styles.declineWrap}>
+            <Text style={styles.declineIntro} numberOfLines={2}>{declining.email}</Text>
+
+            <Pressable style={[styles.declineOpt, styles.declineOptDanger]} onPress={() => handleDeclineFake(declining)}>
+              <View style={styles.declineOptIconDanger}>
+                <ShieldX size={17} color={colors.danger700} strokeWidth={2.3} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.declineOptTitleDanger}>{t('reason_fake_title')}</Text>
+                <Text style={styles.declineOptDesc}>{t('reason_fake_desc')}</Text>
+              </View>
+            </Pressable>
+
+            <Pressable style={[styles.declineOpt, styles.declineOptWarn]} onPress={() => handleDeclineUnqualified(declining)}>
+              <View style={styles.declineOptIconWarn}>
+                <GraduationCap size={17} color={colors.warning700} strokeWidth={2.3} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.declineOptTitleWarn}>{t('reason_unqualified_title')}</Text>
+                <Text style={styles.declineOptDesc}>{t('reason_unqualified_desc')}</Text>
+              </View>
+            </Pressable>
+          </View>
+        )}
+      </Modal>
 
       {/* Detail modal — unchanged behaviour */}
       <Modal isOpen={!!selectedWorker} onClose={() => setSelectedWorker(null)} title="Worker Details">
@@ -534,6 +727,53 @@ const styles = StyleSheet.create({
   errorTitle: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.warning800 },
   errorText: { fontSize: fontSizes.fsXs, color: colors.warning800, fontFamily: fontFamilies.interRegular, marginTop: 2 },
   retryText: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.warning800, textDecorationLine: 'underline', marginTop: 4 },
+
+  /* Certificate verification queue */
+  verifyWrap: { marginTop: spacing.space4, gap: spacing.space2 },
+  verifyHeadRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.space2 },
+  verifyHeading: { flex: 1, fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.gray900 },
+  verifyCard: {
+    backgroundColor: colors.primary50, borderRadius: radii.radiusLg, padding: spacing.space3,
+    borderWidth: 1.5, borderColor: colors.primary100, gap: spacing.space2,
+  },
+  verifyTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.space2 },
+  verifyIcon: {
+    width: 34, height: 34, borderRadius: radii.radiusFull, backgroundColor: colors.primary100,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  verifyCertName: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwSemibold, fontFamily: fontFamilies.interSemiBold, color: colors.gray900 },
+  verifyEmail: { fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular },
+  verifySkills: { fontSize: fontSizes.fsXs, color: colors.primary700, fontFamily: fontFamilies.interMedium, lineHeight: 15 },
+  verifyBtnRow: { flexDirection: 'row', gap: spacing.space2 },
+  verifyBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: spacing.space1, paddingVertical: spacing.space2, borderRadius: radii.radiusMd,
+  },
+  verifyAccept: { backgroundColor: colors.success600 },
+  verifyAcceptText: { color: colors.white, fontSize: fontSizes.fsXs, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold },
+  verifyDecline: { backgroundColor: colors.surfaceWhite, borderWidth: 1.5, borderColor: colors.danger200 },
+  verifyDeclineText: { color: colors.danger700, fontSize: fontSizes.fsXs, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold },
+
+  /* Decline reason picker */
+  declineWrap: { gap: spacing.space3 },
+  declineIntro: { fontSize: fontSizes.fsXs, color: colors.gray500, fontFamily: fontFamilies.interRegular },
+  declineOpt: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.space3,
+    padding: spacing.space3, borderRadius: radii.radiusLg, borderWidth: 1.5,
+  },
+  declineOptDanger: { backgroundColor: colors.danger50, borderColor: colors.danger200 },
+  declineOptWarn: { backgroundColor: colors.warning50, borderColor: colors.warning200 },
+  declineOptIconDanger: {
+    width: 34, height: 34, borderRadius: radii.radiusFull, backgroundColor: colors.danger100,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  declineOptIconWarn: {
+    width: 34, height: 34, borderRadius: radii.radiusFull, backgroundColor: colors.warning100,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  declineOptTitleDanger: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.danger700 },
+  declineOptTitleWarn: { fontSize: fontSizes.fsSm, fontWeight: fontWeights.fwBold, fontFamily: fontFamilies.interBold, color: colors.warning800 },
+  declineOptDesc: { fontSize: fontSizes.fsXs, color: colors.gray600, fontFamily: fontFamilies.interRegular, marginTop: 1, lineHeight: 15 },
 
   /* Search + filter */
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.space2, marginTop: spacing.space4 },

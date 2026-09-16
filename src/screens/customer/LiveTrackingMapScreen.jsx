@@ -6,7 +6,10 @@ import {
   Phone, MessageCircle, Share2, ShieldCheck, Navigation, CheckCircle2, ArrowLeft,
   Route as RouteIcon, Bike, Home as HomeIcon, Pause, Play, RotateCcw, MapPin, Star,
 } from 'lucide-react-native';
-import { mockBookings, DEFAULT_ADDRESS } from '@data/mockBookings';
+import { mockBookings, DEFAULT_ADDRESS, markArrived, useBookings } from '@data/mockBookings';
+// Single source of the distance formula — this screen's private haversine moved there when
+// geo-matching needed the same maths. See src/utils/distance.js.
+import { distanceMeters } from '@utils/distance';
 import { mockWorkers } from '@data/mockWorkers';
 import { useLanguage } from '@context/LanguageContext';
 import Badge from '@components/ui/Badge';
@@ -82,15 +85,20 @@ const MAP_STYLE = [
   { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#c7d2fe' }] },
 ];
 
+/**
+ * MOVED to src/utils/distance.js.
+ *
+ * This screen's private haversine was the app's only distance formula until geo-matching needed the
+ * same maths. Rather than have two copies that could drift, the shared utility is the single
+ * implementation and this wrapper keeps the local call sites (and their metres-based arithmetic)
+ * unchanged. The shared version additionally validates its inputs and returns null instead of NaN;
+ * the `?? 0` preserves this screen's existing behaviour, where the coordinates are hardcoded route
+ * points and therefore always valid.
+ */
 function haversineMeters(aLat, aLng, bLat, bLng) {
-  const R = 6371000;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(bLat - aLat);
-  const dLng = toRad(bLng - aLng);
-  const lat1 = toRad(aLat);
-  const lat2 = toRad(bLat);
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
+  // The shared utility validates its inputs and returns null rather than NaN. The `?? 0` preserves
+  // this screen's existing behaviour: these are hardcoded route points, so they are always valid.
+  return distanceMeters(aLat, aLng, bLat, bLng) ?? 0;
 }
 
 function interpolateRoute(points, stepsPerSegment = 35) {
@@ -129,6 +137,7 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
   const { t } = useLanguage();
   const bookingId = route?.params?.bookingId;
+  useBookings();
 
   const mapRef = useRef(null);
   const [simIndex, setSimIndex] = useState(0);
@@ -158,6 +167,13 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
   const currentPoint = interpolatedRoute[simIndex] || interpolatedRoute[0];
   const isArrived = simIndex >= interpolatedRoute.length - 1;
   const progressPercent = Math.round(currentPoint.totalProgress);
+
+  // When the scripted journey reaches the doorstep, report it against the booking so the worker's
+  // "Job done" button unlocks. The worker portal ALSO derives arrival from elapsed time, so this
+  // is a second, faster path rather than the only one — markArrived is idempotent.
+  useEffect(() => {
+    if (isArrived && booking?.status === 'en-route') markArrived(booking.id);
+  }, [isArrived, booking?.status, booking?.id]);
 
   const remainingDistanceMeters = Math.round(
     haversineMeters(currentPoint.lat, currentPoint.lng, home.lat, home.lng)
@@ -332,18 +348,6 @@ export default function LiveTrackingMapScreen({ navigation, route }) {
           <View style={[styles.progressFill, { width: `${progressPercent}%` }]} />
         </View>
 
-        {/* OTP */}
-        <View style={styles.otpCard}>
-          <View style={styles.otpIcon}>
-            <ShieldCheck size={18} color={colors.success700} strokeWidth={2.2} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.otpLabel}>{t('start_service_otp')}</Text>
-            <Text style={styles.otpHint}>{t('otp_hint')}</Text>
-          </View>
-          <Text style={styles.otpCode}>4892</Text>
-        </View>
-
         {/* Worker profile + actions */}
         <View style={styles.workerCard}>
           <View style={styles.workerAvatar}><Text style={styles.workerAvatarText}>{worker.name[0]}</Text></View>
@@ -478,16 +482,6 @@ const styles = StyleSheet.create({
 
   progressTrack: { height: 6, borderRadius: 3, backgroundColor: colors.gray200, overflow: 'hidden' },
   progressFill: { height: 6, borderRadius: 3, backgroundColor: colors.primary600 },
-
-  otpCard: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.space3,
-    padding: spacing.space3, backgroundColor: colors.success50, borderRadius: radii.radiusLg,
-    borderWidth: 1, borderColor: colors.success100,
-  },
-  otpIcon: { width: 36, height: 36, borderRadius: radii.radiusFull, backgroundColor: colors.success100, alignItems: 'center', justifyContent: 'center' },
-  otpLabel: { fontSize: fontSizes.fsXs, color: colors.success700, fontFamily: fontFamilies.interSemiBold, fontWeight: fontWeights.fwSemibold, textTransform: 'uppercase', letterSpacing: 0.5 },
-  otpHint: { fontSize: 11, color: colors.gray500, fontFamily: fontFamilies.interRegular, marginTop: 1 },
-  otpCode: { fontSize: fontSizes.fs2xl, fontWeight: fontWeights.fwExtrabold, fontFamily: fontFamilies.interExtraBold, color: colors.success700, letterSpacing: 3 },
 
   workerCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.space3 },
   workerAvatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: colors.accent500, alignItems: 'center', justifyContent: 'center' },

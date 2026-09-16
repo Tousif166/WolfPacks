@@ -22,8 +22,9 @@ import {
   Landmark,
   ArrowRight,
 } from 'lucide-react-native';
-import { useAuth } from '@context/AuthContext';
+import { useAuth, ROLE_MISMATCH } from '@context/AuthContext';
 import { useLanguage } from '@context/LanguageContext';
+import { getWorkerRegistration, isBanned, REJECT_FAKE } from '@data/workerRegistration';
 import { CustomerIllustration, WorkerIllustration } from '@components/illustrations/RoleIllustrations';
 import { BrandLogo } from '@components/app';
 import LanguageToggle from '@components/ui/LanguageToggle';
@@ -61,7 +62,11 @@ import { colors, spacing, radii, shadows, fontSizes, fontWeights, fontFamilies }
 const DEMO_CREDENTIALS = {
   customer: { email: 'demo.customer@sahakar.in', password: 'demo123' },
   worker: { email: 'demo.worker@sahakar.in', password: 'demo123' },
-  // admin: no demo bypass — real Supabase account required
+  // Admin has a demo bypass so the portal is reachable on a fresh install. Without it, certificate
+  // verification — which is admin-only — was impossible, leaving a newly registered worker unable to
+  // be approved and therefore unable to see any jobs. See the note in AuthContext.DEMO_ACCOUNTS for
+  // the JWT tradeoff this accepts.
+  admin: { email: 'demo.admin@sahakar.in', password: 'demo123' },
 };
 
 // DECORATIVE-ONLY: popular service names shown as chips on the customer card, mirroring the
@@ -74,6 +79,51 @@ const CUSTOMER_SERVICE_CHIPS = [
   { icon: Paintbrush, label: 'Painter' },
 ];
 
+/**
+ * Turns an auth failure into something a person can act on.
+ *
+ * Supabase returns developer-facing strings ('Invalid login credentials', 'Email not confirmed'),
+ * and services/supabase.js returns a missing-env message when the keys are unset. Showing any of
+ * those raw is unhelpful at best and alarming at worst, so the cases we recognise are mapped to
+ * plain language and anything unrecognised falls back to the generic message rather than leaking
+ * internals.
+ */
+export function friendlyAuthError(rawError, t) {
+  const msg = String(rawError || '').toLowerCase();
+
+  // Wrong email or wrong password — Supabase deliberately does not say which, and neither do we:
+  // confirming that an email exists would leak which accounts are registered.
+  if (
+    msg.includes('invalid login credentials') ||
+    msg.includes('invalid credentials') ||
+    msg.includes('invalid email or password')
+  ) {
+    return t('login_wrong_details');
+  }
+
+  // Account exists but the email link was never clicked.
+  if (msg.includes('email not confirmed') || msg.includes('not confirmed')) {
+    return t('login_email_unconfirmed');
+  }
+
+  if (msg.includes('too many requests') || msg.includes('rate limit')) {
+    return t('login_too_many_attempts');
+  }
+
+  // No network, or Supabase unreachable/unconfigured. From the user's side these are the same
+  // thing: the app could not check the details right now.
+  if (
+    msg.includes('network') ||
+    msg.includes('fetch') ||
+    msg.includes('timeout') ||
+    msg.includes('not configured')
+  ) {
+    return t('login_no_connection');
+  }
+
+  return t('login_wrong_details');
+}
+
 // DECORATIVE-ONLY: benefit labels shown on the worker card, mirroring the reference design.
 const WORKER_BENEFIT_CHIPS = [
   { icon: Wallet, label: 'Earn daily' },
@@ -82,7 +132,9 @@ const WORKER_BENEFIT_CHIPS = [
 ];
 
 export default function LoginScreen({ navigation }) {
-  const { login, loading } = useAuth();
+  // `submitting`, not `loading`: `loading` swaps the navigator to the splash screen, which would
+  // unmount this screen mid-login and discard both the chosen role and any error message.
+  const { login, submitting } = useAuth();
   const { t } = useLanguage();
   const insets = useSafeAreaInsets();
 
@@ -106,14 +158,38 @@ export default function LoginScreen({ navigation }) {
   };
 
   const handleLogin = async () => {
+    // Refuse a banned account before authenticating at all, so a banned worker never reaches the
+    // portal even momentarily. The ban lives in the local registration store keyed by email — see
+    // src/data/workerRegistration.js for why it is not a Supabase column.
+    const registration = getWorkerRegistration(email);
+    if (isBanned(registration)) {
+      setError(
+        registration.banReason === REJECT_FAKE
+          ? t('login_banned_fake')
+          : t('login_banned_generic'),
+      );
+      return;
+    }
+
     if (!email || !password) {
       setError(t('enter_email_password'));
       return;
     }
     setError('');
-    const result = await login(email, password);
+    // Pass the portal the user picked so the wrong role can't slip into the wrong portal.
+    const result = await login(email, password, selectedRole);
     if (!result.success) {
-      setError(result.error || t('login_failed'));
+      if (result.error === ROLE_MISMATCH) {
+        // Name the portal these credentials actually belong to, so the fix is obvious.
+        const actual = result.actualRole === 'customer'
+          ? t('customer')
+          : result.actualRole === 'worker'
+            ? t('worker')
+            : t('admin');
+        setError(t('role_mismatch_msg', { selected: roleWord, actual }));
+      } else {
+        setError(friendlyAuthError(result.error, t));
+      }
     }
     // On success: no navigate() — RootNavigator switches trees on the role change.
   };
@@ -371,11 +447,11 @@ export default function LoginScreen({ navigation }) {
           </View>
 
           <Pressable
-            style={({ pressed }) => [styles.submit, loading && styles.submitDisabled, pressed && !loading && styles.submitPressed]}
+            style={({ pressed }) => [styles.submit, submitting && styles.submitDisabled, pressed && !submitting && styles.submitPressed]}
             onPress={handleLogin}
-            disabled={loading}
+            disabled={submitting}
           >
-            {loading ? (
+            {submitting ? (
               <ActivityIndicator size="small" color={colors.white} />
             ) : (
               <Text style={styles.submitText}>{t('sign_in_as', { role: roleWord })}</Text>

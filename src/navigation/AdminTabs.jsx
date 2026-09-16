@@ -1,20 +1,22 @@
 import { View, StyleSheet } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LayoutDashboard, Users, AlertTriangle, TrendingUp } from 'lucide-react-native';
+import { LayoutDashboard, Users, AlertTriangle, TrendingUp, GraduationCap } from 'lucide-react-native';
 import { useLanguage } from '@context/LanguageContext';
 import AdminDashboardScreen from '@screens/admin/AdminDashboardScreen';
 import WorkerManagementScreen from '@screens/admin/WorkerManagementScreen';
 import ComplaintsDashboardScreen from '@screens/admin/ComplaintsDashboardScreen';
 import DemandForecastScreen from '@screens/admin/DemandForecastScreen';
+import TrainingOversightScreen from '@screens/admin/TrainingOversightScreen';
 import { colors, spacing, radii, shadows, fontFamilies } from '@theme';
 
 /**
  * AdminTabs — bottom-tab navigator for the admin portal.
  *
- * PHASE 11 REDESIGN v2 — PRESENTATION ONLY. The four Tab.Screen entries keep their exact route
- * names (AdminDashboard / AdminWorkers / AdminComplaints / AdminForecast), components, order and
- * titles, so every navigation.navigate() elsewhere still resolves. Routing/logic is untouched.
+ * PHASE 11 REDESIGN v2 — PRESENTATION ONLY. The five Tab.Screen entries keep their exact route
+ * names (AdminDashboard / AdminWorkers / AdminComplaints / AdminForecast / AdminTraining),
+ * components, order and titles, so every navigation.navigate() elsewhere still resolves.
+ * Routing/logic is untouched.
  *
  * What changed is purely visual:
  *   - a floating, rounded, elevated tab bar (detached from the screen edges) with a soft pill
@@ -108,6 +110,14 @@ export default function AdminTabs() {
           options={{
             title: t('forecast'),
             tabBarIcon: ({ color, focused }) => <TabIcon Icon={TrendingUp} color={color} focused={focused} />,
+          }}
+        />
+        <Tab.Screen
+          name="AdminTraining"
+          component={TrainingOversightScreen}
+          options={{
+            title: t('training'),
+            tabBarIcon: ({ color, focused }) => <TabIcon Icon={GraduationCap} color={color} focused={focused} />,
           }}
         />
       </Tab.Navigator>

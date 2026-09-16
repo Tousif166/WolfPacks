@@ -6,6 +6,10 @@ export const mockWorkers = [
     phone: '+91 76543 21098',
     avatar: null,
     skills: ['Plumbing', 'Pipe Fitting'],
+    // Catalogue service ids this worker can be MATCHED on. Additive: skills above stays the
+    // display list. Needed because several seeded skill names ('Pipe Fitting', 'House Cleaning')
+    // match no mockServices entry, so name-based resolution alone would silently drop them.
+    serviceIds: ['plumbing'],
     cooperative: 'Delhi Workers Cooperative Society',
     rating: 4.8,
     totalJobs: 245,
@@ -34,6 +38,7 @@ export const mockWorkers = [
     phone: '+91 65432 10987',
     avatar: null,
     skills: ['Electrical', 'Wiring', 'Fan Installation'],
+    serviceIds: ['electrical'],
     cooperative: 'Delhi Workers Cooperative Society',
     rating: 4.6,
     totalJobs: 189,
@@ -55,6 +60,9 @@ export const mockWorkers = [
     phone: '+91 54321 09876',
     avatar: null,
     skills: ['House Cleaning', 'Deep Cleaning', 'Kitchen Cleaning'],
+    // 'House Cleaning' does not equal the catalogue's 'Cleaning', so without this explicit id this
+    // worker resolved to ZERO services and could never be matched to anything.
+    serviceIds: ['cleaning'],
     cooperative: 'Women Workers Cooperative',
     rating: 4.9,
     totalJobs: 312,
@@ -79,6 +87,7 @@ export const mockWorkers = [
     phone: '+91 43210 98765',
     avatar: null,
     skills: ['AC Repair', 'AC Installation', 'Refrigerator Repair'],
+    serviceIds: ['ac-repair', 'appliance-repair'],
     cooperative: 'Delhi Workers Cooperative Society',
     rating: 4.5,
     totalJobs: 156,
@@ -99,6 +108,7 @@ export const mockWorkers = [
     phone: '+91 32109 87654',
     avatar: null,
     skills: ['Painting', 'Wall Texture', 'Waterproofing'],
+    serviceIds: ['painting'],
     cooperative: 'Women Workers Cooperative',
     rating: 4.7,
     totalJobs: 98,

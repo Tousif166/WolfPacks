@@ -1,0 +1,15 @@
+-- PLACEHOLDER — intentionally contains no SQL.
+--
+-- This version was applied directly to the hosted project (via the Supabase dashboard / Studio)
+-- before this repo tracked migrations, so no .sql file was ever authored for it. The change is
+-- already live in the remote database.
+--
+-- The file exists only so the CLI's migration history matches the remote one. Without it,
+-- `supabase db push` and `db pull` both abort with "Remote migration versions not found in local
+-- migrations directory".
+--
+-- DO NOT DELETE, and do not add SQL here.
+--
+-- KNOWN LIMITATION: because these are empty, the repo alone cannot rebuild the schema from
+-- scratch. The authoritative snapshot of everything that predates 2026-09-12 is
+-- `<timestamp>_remote_schema.sql`, produced by `supabase db pull`.
