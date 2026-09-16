@@ -134,7 +134,7 @@ const WORKER_BENEFIT_CHIPS = [
 export default function LoginScreen({ navigation }) {
   // `submitting`, not `loading`: `loading` swaps the navigator to the splash screen, which would
   // unmount this screen mid-login and discard both the chosen role and any error message.
-  const { login, submitting } = useAuth();
+  const { login, loginWithGoogle, submitting } = useAuth();
   const { t } = useLanguage();
   const insets = useSafeAreaInsets();
 
@@ -192,6 +192,14 @@ export default function LoginScreen({ navigation }) {
       }
     }
     // On success: no navigate() — RootNavigator switches trees on the role change.
+  };
+
+  const handleGoogleLogin = async () => {
+    setError('');
+    const result = await loginWithGoogle();
+    if (!result.success) {
+      setError(friendlyAuthError(result.error, t));
+    }
   };
 
   const callHelpline = () => {
@@ -456,6 +464,20 @@ export default function LoginScreen({ navigation }) {
             ) : (
               <Text style={styles.submitText}>{t('sign_in_as', { role: roleWord })}</Text>
             )}
+          </Pressable>
+
+          <View style={styles.divider}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerText}>OR</Text>
+            <View style={styles.dividerLine} />
+          </View>
+
+          <Pressable
+            style={({ pressed }) => [styles.googleBtn, submitting && styles.submitDisabled, pressed && !submitting && styles.googleBtnPressed]}
+            onPress={handleGoogleLogin}
+            disabled={submitting}
+          >
+            <Text style={styles.googleBtnText}>Continue with Google</Text>
           </Pressable>
 
           <Text style={styles.hint}>
@@ -1021,6 +1043,41 @@ const styles = StyleSheet.create({
   },
   submitText: {
     color: colors.white,
+    fontSize: fontSizes.fsBase,
+    fontWeight: fontWeights.fwSemibold,
+    fontFamily: fontFamilies.interSemiBold,
+  },
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: spacing.space2,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: colors.gray200,
+  },
+  dividerText: {
+    paddingHorizontal: spacing.space3,
+    fontSize: fontSizes.fsXs,
+    color: colors.gray500,
+    fontFamily: fontFamilies.interMedium,
+  },
+  googleBtn: {
+    width: '100%',
+    paddingVertical: spacing.space4,
+    backgroundColor: colors.white,
+    borderRadius: radii.radiusMd,
+    borderWidth: 1,
+    borderColor: colors.gray300,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  googleBtnPressed: {
+    backgroundColor: colors.gray50,
+  },
+  googleBtnText: {
+    color: colors.gray800,
     fontSize: fontSizes.fsBase,
     fontWeight: fontWeights.fwSemibold,
     fontFamily: fontFamilies.interSemiBold,

@@ -1,6 +1,6 @@
 import { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
 import { Alert } from 'react-native';
-import { supabase, signIn, signUp, signOut, getProfile, getWorkerProfile } from '@services/supabase';
+import { supabase, signIn, signUp, signOut, getProfile, getWorkerProfile, signInWithGoogle } from '@services/supabase';
 // Safe to consume here: App.jsx nests LanguageProvider OUTSIDE AuthProvider, so the language
 // context is always mounted by the time this provider renders.
 import { useLanguage } from '@context/LanguageContext';
@@ -258,6 +258,16 @@ export function AuthProvider({ children }) {
     return { success: true };
   }, []);
 
+  const loginWithGoogle = useCallback(async () => {
+    dispatch({ type: 'AUTH_START' });
+    const { error } = await signInWithGoogle();
+    if (error) {
+      dispatch({ type: 'AUTH_ERROR', payload: error.message || 'Google Sign-in failed' });
+      return { success: false, error: error.message || 'Google Sign-in failed' };
+    }
+    return { success: true };
+  }, []);
+
   const register = useCallback(async ({ email, password, role, fullName, phone, city, state, skills, wantsTraining }) => {
     dispatch({ type: 'AUTH_START' });
     const { data, error } = await signUp({ email, password, role, fullName, phone, city, state, skills, wantsTraining });
@@ -330,6 +340,7 @@ export function AuthProvider({ children }) {
       role,
       isDemo,
       login,
+      loginWithGoogle,
       register,
       logout,
       logoutImmediately,

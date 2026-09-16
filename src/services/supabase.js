@@ -2,6 +2,7 @@ import 'react-native-url-polyfill/auto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Config from 'react-native-config';
 import { createClient } from '@supabase/supabase-js';
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
 
 // Ported from e:\sahakar-seva-progress\src\services\supabase.js.
 //
@@ -28,6 +29,12 @@ import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = Config.SUPABASE_URL;
 const SUPABASE_ANON_KEY = Config.SUPABASE_ANON_KEY;
+const GOOGLE_WEB_CLIENT_ID = Config.GOOGLE_WEB_CLIENT_ID;
+
+GoogleSignin.configure({
+  webClientId: GOOGLE_WEB_CLIENT_ID,
+  offlineAccess: true,
+});
 
 const isConfigured = Boolean(SUPABASE_URL) && Boolean(SUPABASE_ANON_KEY) && SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY';
 
@@ -86,7 +93,31 @@ export async function signIn({ email, password }) {
 
 export async function signOut() {
   if (!supabase) return { error: NOT_CONFIGURED_ERROR };
+  try {
+    await GoogleSignin.signOut();
+  } catch (e) {
+    // ignore if not signed in with Google
+  }
   return await supabase.auth.signOut();
+}
+
+export async function signInWithGoogle() {
+  if (!supabase) return { data: null, error: NOT_CONFIGURED_ERROR };
+  try {
+    await GoogleSignin.hasPlayServices();
+    const userInfo = await GoogleSignin.signIn();
+    if (userInfo.data && userInfo.data.idToken) {
+      const { data, error } = await supabase.auth.signInWithIdToken({
+        provider: 'google',
+        token: userInfo.data.idToken,
+      });
+      return { data, error };
+    } else {
+      throw new Error('No ID token present in Google Sign-In response');
+    }
+  } catch (error) {
+    return { data: null, error };
+  }
 }
 
 export async function getSession() {
